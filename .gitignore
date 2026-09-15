@@ -1,0 +1,5 @@
+/ghcall
+/cache.db
+*.db
+config.yaml
+.env

@@ -1,0 +1,28 @@
+github:
+  token_env: GITHUB_TOKEN   # ghcall reads a PAT/App token from this env var
+
+cache:
+  path: ~/.cache/ghcall/cache.db
+
+concurrency:
+  max_in_flight: 15         # bounded REST worker pool for phase-1 change detection
+
+filters:
+  # Case 1: watch specific repos, only PRs from these authors, with CI status.
+  - name: ci-watch
+    repos:
+      - mchekalov/sharepay
+      - mchekalov/mchekalov.github.io
+    authors:
+      - mchekalov
+    state: open
+    fields: [number, title, author, updated_at, ci_status]
+    watch_ci: true
+
+  # Case 2: scan specific repos, any author, just title + body.
+  - name: repo-scan
+    repos:
+      - mchekalov/sharepay
+      - mchekalov/mchekalov.github.io
+    state: all
+    fields: [number, title, body]
