@@ -13,6 +13,7 @@ filters:
     repos:
       - mchekalov/sharepay
       - mchekalov/mchekalov.github.io
+      - mchekalov/ghcall
     authors:
       - mchekalov
     state: open
@@ -24,5 +25,6 @@ filters:
     repos:
       - mchekalov/sharepay
       - mchekalov/mchekalov.github.io
+      - mchekalov/ghcall
     state: all
     fields: [number, title, body]
