@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"sort"
 
+	"ghcall/internal/agent"
 	"ghcall/internal/cache"
 	"ghcall/internal/config"
 	"ghcall/internal/github"
@@ -56,6 +58,31 @@ func main() {
 	if err := output.WriteJSON(os.Stdout, results); err != nil {
 		log.Fatalf("ghcall: %v", err)
 	}
+
+	if cfg.Agent.Enabled() {
+		runResults := agent.Run(context.Background(), results, cfg.Agent, buildAgentEnv(cfg, token))
+		for _, rr := range runResults {
+			if rr.Err != nil {
+				log.Printf("ghcall: agent run failed for %s#%d: %v\n%s", rr.Repo, rr.Number, rr.Err, rr.Output)
+			} else {
+				log.Printf("ghcall: agent run finished for %s#%d", rr.Repo, rr.Number)
+			}
+		}
+	}
+}
+
+// buildAgentEnv resolves the env vars forwarded into every agent container:
+// the GitHub token ghcall itself uses, plus whatever cfg.Agent.EnvPassthrough
+// names (e.g. Bedrock/LiteLLM credentials) are set in ghcall's own process
+// environment. Unset passthrough names are silently skipped.
+func buildAgentEnv(cfg *config.Config, token string) []string {
+	env := []string{"GITHUB_TOKEN=" + token}
+	for _, name := range cfg.Agent.EnvPassthrough {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // printDryRun shows what a real run would check, per filter, without

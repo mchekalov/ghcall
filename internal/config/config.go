@@ -15,6 +15,7 @@ type Config struct {
 	GitHub      GitHubConfig `yaml:"github"`
 	Cache       CacheConfig  `yaml:"cache"`
 	Concurrency Concurrency  `yaml:"concurrency"`
+	Agent       AgentConfig  `yaml:"agent"`
 	Filters     []Filter     `yaml:"filters"`
 }
 
@@ -29,6 +30,21 @@ type CacheConfig struct {
 type Concurrency struct {
 	MaxInFlight int `yaml:"max_in_flight"`
 }
+
+// AgentConfig controls the CI-autofix agent trigger: for every PR a filter
+// reports with a failing CI state, ghcall starts one `docker run` of this
+// image. Absent/zero Image means the trigger is disabled entirely — ghcall
+// behaves exactly as before, detect-and-print only.
+type AgentConfig struct {
+	Image             string   `yaml:"image"`
+	DockerBin         string   `yaml:"docker_bin"`
+	EnvPassthrough    []string `yaml:"env_passthrough"`
+	MaxConcurrentRuns int      `yaml:"max_concurrent_runs"`
+	PerRunTimeoutSec  int      `yaml:"per_run_timeout_seconds"`
+}
+
+// Enabled reports whether the agent trigger should run at all.
+func (a AgentConfig) Enabled() bool { return a.Image != "" }
 
 // Filter is one named query: a list of repos, an optional author allowlist,
 // a PR state, and the set of fields to fetch/emit for matching PRs.
@@ -79,9 +95,12 @@ var validFields = map[string]bool{
 var validStates = map[string]bool{"open": true, "closed": true, "all": true}
 
 const (
-	defaultTokenEnv    = "GITHUB_TOKEN"
-	defaultCachePath   = "~/.cache/ghcall/cache.db"
-	defaultMaxInFlight = 15
+	defaultTokenEnv          = "GITHUB_TOKEN"
+	defaultCachePath         = "~/.cache/ghcall/cache.db"
+	defaultMaxInFlight       = 15
+	defaultDockerBin         = "docker"
+	defaultMaxConcurrentRuns = 2
+	defaultPerRunTimeoutSec  = 25 * 60 // 25 minutes
 )
 
 // Load reads, defaults, and validates the config file at path.
@@ -115,6 +134,17 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Concurrency.MaxInFlight <= 0 {
 		c.Concurrency.MaxInFlight = defaultMaxInFlight
+	}
+	if c.Agent.Enabled() {
+		if c.Agent.DockerBin == "" {
+			c.Agent.DockerBin = defaultDockerBin
+		}
+		if c.Agent.MaxConcurrentRuns <= 0 {
+			c.Agent.MaxConcurrentRuns = defaultMaxConcurrentRuns
+		}
+		if c.Agent.PerRunTimeoutSec <= 0 {
+			c.Agent.PerRunTimeoutSec = defaultPerRunTimeoutSec
+		}
 	}
 	for i := range c.Filters {
 		if c.Filters[i].State == "" {
