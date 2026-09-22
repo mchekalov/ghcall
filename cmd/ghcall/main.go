@@ -62,9 +62,15 @@ func main() {
 	if cfg.Agent.Enabled() {
 		runResults := agent.Run(context.Background(), results, cfg.Agent, buildAgentEnv(cfg, token))
 		for _, rr := range runResults {
-			if rr.Err != nil {
+			switch {
+			case rr.Err != nil:
 				log.Printf("ghcall: agent run failed for %s#%d: %v\n%s", rr.Repo, rr.Number, rr.Err, rr.Output)
-			} else {
+			case cfg.Agent.Launcher == config.LauncherKubernetes:
+				// The Job runs on after ghcall exits, so the Job's name (or
+				// the note that an identical one was already in flight) is
+				// the whole outcome there is to report.
+				log.Printf("ghcall: agent job for %s#%d: %s", rr.Repo, rr.Number, rr.Output)
+			default:
 				log.Printf("ghcall: agent run finished for %s#%d", rr.Repo, rr.Number)
 			}
 		}

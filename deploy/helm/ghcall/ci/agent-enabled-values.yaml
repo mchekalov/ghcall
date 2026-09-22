@@ -1,0 +1,41 @@
+# Exercises every optional branch of the chart at once: the agent launcher,
+# its RBAC, an inline Secret, extra env and the scheduling knobs.
+image:
+  tag: dev
+
+github:
+  token: ghp_example
+database:
+  dsn: postgres://ghcall:pw@postgres:5432/ghcall?sslmode=require
+
+config:
+  cache:
+    driver: postgres
+    dsn_env: GHCALL_DB_DSN
+  filters:
+    - name: ci-watch
+      repos: [mchekalov/ghcall]
+      authors: ["renovate[bot]"]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true
+
+agent:
+  enabled: true
+  image: autofix:dev
+  kubernetes:
+    envFromSecrets: [ghcall-agent-creds]
+    imagePullSecrets: [artifactory]
+    labels:
+      team: platform
+    resources:
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+imagePullSecrets:
+  - name: artifactory
+
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy:3128

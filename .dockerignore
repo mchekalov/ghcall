@@ -1,0 +1,7 @@
+.git
+.github
+.env
+deploy
+*.db
+config.yaml
+/ghcall

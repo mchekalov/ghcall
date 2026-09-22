@@ -1,0 +1,153 @@
+# Default values for ghcall.
+#
+# ghcall is a one-shot CLI: one incremental pass, then exit. That makes the
+# workload a CronJob — there is no port, Service, health endpoint or
+# readiness probe here, and nothing to template for them.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: artifactorycn.netcracker.com:17008
+  repository: product/prod.platform.databases_ghcall
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+  # - name: artifactory
+
+# --- schedule -----------------------------------------------------------
+schedule: "*/10 * * * *"
+# Forbid keeps two passes from racing on the same cache rows. With the
+# postgres cache backend Replace would also be safe, but a skipped tick is
+# cheaper than a doubled one: the next run picks up everything anyway.
+concurrencyPolicy: Forbid
+startingDeadlineSeconds: 300
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+# Upper bound on a single ghcall pass. Well under the schedule interval so a
+# wedged run cannot block the next tick indefinitely.
+activeDeadlineSeconds: 540
+backoffLimit: 0
+suspend: false
+timeZone: ""
+
+# --- credentials --------------------------------------------------------
+# existingSecret is the documented path. The inline `token` / `dsn` values
+# render a Secret into the release instead — fine for a quick trial, but they
+# end up in Helm's release history in plain text, so do not use them for a
+# real deployment.
+github:
+  existingSecret:
+    name: ""
+    key: token
+  token: ""
+
+database:
+  existingSecret:
+    name: ""
+    key: dsn
+  dsn: ""
+
+# --- ghcall's own config ------------------------------------------------
+# Rendered verbatim into a ConfigMap and mounted read-only at
+# /etc/ghcall/config.yaml. Everything configs/example.yaml documents is valid
+# here; the secrets stay out of it by design and arrive as env vars.
+config:
+  github:
+    token_env: GITHUB_TOKEN
+
+  cache:
+    driver: postgres
+    dsn_env: GHCALL_DB_DSN
+    max_open_conns: 0
+
+  concurrency:
+    max_in_flight: 15
+
+  filters:
+    - name: ci-watch
+      repos:
+        - mchekalov/ghcall
+      authors:
+        - renovate[bot]
+        - dependabot[bot]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true
+
+# --- agent --------------------------------------------------------------
+# Off by default: a first install is detect-and-print only. Turning it on
+# makes ghcall create one Job per failing-CI PR.
+agent:
+  enabled: false
+  image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
+  maxConcurrentRuns: 2
+  # Becomes the agent Job's activeDeadlineSeconds.
+  perRunTimeoutSeconds: 1500
+  kubernetes:
+    # Empty means the namespace ghcall itself runs in.
+    namespace: ""
+    # Empty means ghcall's own ServiceAccount.
+    serviceAccount: ""
+    # Where the agent's Bedrock/LiteLLM credentials come from. They are
+    # mounted onto the agent Job, never onto ghcall's pod.
+    envFromSecrets: []
+      # - ghcall-agent-creds
+    imagePullSecrets: []
+      # - artifactory
+    # Also the dedupe window: a PR whose Job still exists is skipped, so a
+    # re-failing PR is not retried until this expires. See the README.
+    jobTTLSeconds: 3600
+    labels: {}
+    resources: {}
+      # limits:
+      #   cpu: "2"
+      #   memory: 4Gi
+
+# --- pod ----------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  # The Role/RoleBinding letting ghcall create agent Jobs. Only needed when
+  # agent.enabled is true.
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+extraEnv: []
+  # - name: HTTPS_PROXY
+  #   value: http://proxy:3128
+extraEnvFrom: []
+  # - secretRef:
+  #     name: extra
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

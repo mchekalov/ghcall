@@ -1,0 +1,36 @@
+ghcall is installed as a CronJob: {{ include "ghcall.fullname" . }}
+Schedule: {{ .Values.schedule }}{{ if .Values.suspend }} (SUSPENDED){{ end }}
+
+Run it once, now, without waiting for the schedule:
+
+  kubectl create job --from=cronjob/{{ include "ghcall.fullname" . }} ghcall-manual-1 -n {{ .Release.Namespace }}
+  kubectl logs job/ghcall-manual-1 -n {{ .Release.Namespace }}
+
+{{ if .Values.agent.enabled -}}
+The CI-autofix agent is ENABLED. Every PR reported with a failing CI state
+gets one Job named ghcall-autofix-<repo>-<pr>:
+
+  kubectl get jobs -n {{ default .Release.Namespace .Values.agent.kubernetes.namespace }} -l app.kubernetes.io/name=ghcall-autofix
+
+That name is also the dedupe key: while the Job exists, a second ghcall run
+for the same PR is skipped. The window is jobTTLSeconds
+({{ .Values.agent.kubernetes.jobTTLSeconds }}s), so a PR that fails again
+within it is not re-triggered until the finished Job is garbage-collected.
+
+{{- if not .Values.agent.kubernetes.envFromSecrets }}
+
+WARNING: agent.kubernetes.envFromSecrets is empty, so the agent Jobs get no
+model credentials (Bedrock/LiteLLM) and will fail as soon as they start.
+{{- end }}
+{{- else -}}
+The CI-autofix agent is disabled: this install only detects and prints.
+Set agent.enabled=true once the output looks right.
+{{- end }}
+
+{{ if include "ghcall.createSecret" . -}}
+WARNING: credentials were supplied inline, so this release rendered its own
+Secret ({{ include "ghcall.fullname" . }}-credentials). The values you passed
+are stored in Helm's release history in plain text. For anything beyond a
+trial, create the Secret yourself and point github.existingSecret /
+database.existingSecret at it.
+{{- end }}

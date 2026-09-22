@@ -1,0 +1,59 @@
+# ghcall running inside Kubernetes, as the Helm chart in deploy/helm/ghcall
+# renders it: a Postgres cache (no PVC, no single-writer bottleneck) and the
+# kubernetes agent launcher (no docker socket).
+#
+# The chart generates this file into a ConfigMap, so nothing secret appears
+# in it — the GitHub token and the database DSN arrive as env vars.
+
+github:
+  token_env: GITHUB_TOKEN
+
+cache:
+  driver: postgres
+  dsn_env: GHCALL_DB_DSN
+  max_open_conns: 0
+
+concurrency:
+  max_in_flight: 15
+
+agent:
+  image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
+  # Instead of `docker run`, create one batch/v1 Job per failing-CI PR by
+  # POSTing to the in-cluster API server with the pod's own ServiceAccount
+  # token. ghcall needs only `create` on batch/jobs for this.
+  launcher: kubernetes
+  max_concurrent_runs: 2
+  # Becomes the agent Job's activeDeadlineSeconds — the launcher itself
+  # returns as soon as the Job is accepted, it does not wait for the run.
+  per_run_timeout_seconds: 1500
+  kubernetes:
+    namespace: ""                 # empty = the namespace ghcall runs in
+    service_account: ""           # empty = the namespace's default SA
+    # The agent's model credentials go straight onto the agent Job, so they
+    # never have to be present in ghcall's own pod. This is why
+    # env_passthrough (the docker launcher's mechanism) is absent here.
+    env_from_secrets:
+      - ghcall-agent-creds
+    image_pull_secrets:
+      - artifactory
+    # A finished Job blocks its own name until this expires, and the name is
+    # derived from repo+PR — so this is also the dedupe window: a PR that
+    # fails again within it is not re-triggered.
+    job_ttl_seconds: 3600
+    labels:
+      team: platform
+    resources:                    # passed through verbatim to the container
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+filters:
+  - name: ci-watch
+    repos:
+      - mchekalov/ghcall
+    authors:
+      - renovate[bot]
+      - dependabot[bot]
+    state: open
+    fields: [number, title, author, updated_at, ci_status]
+    watch_ci: true

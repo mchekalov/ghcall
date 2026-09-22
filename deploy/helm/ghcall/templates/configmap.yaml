@@ -1,0 +1,44 @@
+{{- /*
+ghcall's config file. The agent block is built from .Values.agent rather
+than being written into .Values.config, so the chart can wire the
+kubernetes launcher and the RBAC that goes with it from a single switch.
+Anything set under config.agent is ignored.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ghcall.fullname" . }}
+  labels:
+    {{- include "ghcall.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- omit .Values.config "agent" | toYaml | nindent 4 }}
+    {{- if .Values.agent.enabled }}
+    agent:
+      image: {{ .Values.agent.image | quote }}
+      launcher: kubernetes
+      max_concurrent_runs: {{ .Values.agent.maxConcurrentRuns }}
+      per_run_timeout_seconds: {{ .Values.agent.perRunTimeoutSeconds }}
+      kubernetes:
+        namespace: {{ default .Release.Namespace .Values.agent.kubernetes.namespace | quote }}
+        {{- with .Values.agent.kubernetes.serviceAccount }}
+        service_account: {{ . | quote }}
+        {{- end }}
+        job_ttl_seconds: {{ .Values.agent.kubernetes.jobTTLSeconds }}
+        {{- with .Values.agent.kubernetes.envFromSecrets }}
+        env_from_secrets:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.agent.kubernetes.imagePullSecrets }}
+        image_pull_secrets:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.agent.kubernetes.labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.agent.kubernetes.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+    {{- end }}
