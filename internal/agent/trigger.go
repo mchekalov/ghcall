@@ -34,7 +34,7 @@ type RunResult struct {
 // that ran and failed, and ERROR for one that could not run at all.
 var failingCIStates = map[string]bool{
 	"FAILURE": true,
-	"ERRROR":  true,
+	"ERROR":   true,
 }
 
 // Candidates filters results down to the PRs the agent should be started
