@@ -47,10 +47,10 @@ type Pipeline struct {
 	cfg  *config.Config
 	rest *github.RESTClient
 	gql  *github.GraphQLClient
-	c    *cache.Cache
+	c    cache.Store
 }
 
-func New(cfg *config.Config, rest *github.RESTClient, gql *github.GraphQLClient, c *cache.Cache) *Pipeline {
+func New(cfg *config.Config, rest *github.RESTClient, gql *github.GraphQLClient, c cache.Store) *Pipeline {
 	return &Pipeline{cfg: cfg, rest: rest, gql: gql, c: c}
 }
 

@@ -2,7 +2,8 @@ github:
   token_env: GITHUB_TOKEN   # ghcall reads a PAT/App token from this env var
 
 cache:
-  path: ~/.cache/ghcall/cache.db
+  driver: sqlite                  # sqlite (default) | postgres — see example-postgres.yaml
+  path: ~/.cache/ghcall/cache.db  # sqlite driver only
 
 concurrency:
   max_in_flight: 15         # bounded REST worker pool for phase-1 change detection
