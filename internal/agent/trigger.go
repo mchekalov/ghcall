@@ -30,8 +30,12 @@ type RunResult struct {
 }
 
 // failingCIStates are the statusCheckRollup values that mark a PR as a
-// candidate for the autofix agent.
-var failingCIStates = map[string]bool{"FAILURE": true, "ERROR": true}
+// candidate for the autofix agent. GitHub reports FAILURE for a check
+// that ran and failed, and ERROR for one that could not run at all.
+var failingCIStates = map[string]bool{
+	"FAILURE": true,
+	"ERRROR":  true,
+}
 
 // Candidates filters results down to the PRs the agent should be started
 // for: any result whose CI state indicates a failure.
