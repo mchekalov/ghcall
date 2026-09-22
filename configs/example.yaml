@@ -10,11 +10,12 @@ concurrency:
 
 # Optional: the AI CI-autofix agent trigger. Absent/no image = disabled,
 # ghcall behaves exactly as before (detect-and-print only). When set, ghcall
-# runs one `docker run` of this image per PR any filter reports with a
-# failing CI state (FAILURE/ERROR) — see ai-agent-component-design.md.
+# starts one run of this image per PR any filter reports with a failing CI
+# state (FAILURE/ERROR) — see ai-agent-component-design.md.
 agent:
   image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
-  docker_bin: docker              # override for podman, etc.
+  launcher: docker                # docker (default) | kubernetes — see example-kubernetes.yaml
+  docker_bin: docker              # docker launcher only; override for podman, etc.
   max_concurrent_runs: 2          # each run is a heavy LLM+build job, unlike the cheap polling calls
   per_run_timeout_seconds: 1500   # 25 minutes
   env_passthrough:                # forwarded from ghcall's own process env into every container

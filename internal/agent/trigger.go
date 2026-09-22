@@ -3,13 +3,17 @@
 // and records how they exited — it never interprets the fix result, since
 // the container posts its own commit/comment/merge outcome straight to
 // GitHub.
+//
+// How a run is started is the launcher's job: docker.go shells out to a
+// local container runtime, kubernetes.go creates a Job per PR against the
+// in-cluster API server. Run owns everything around that — which PRs are
+// candidates, the bounded worker pool, the per-run timeout — and is
+// identical for both.
 package agent
 
 import (
-	"bytes"
 	"context"
-	"os/exec"
-	"strconv"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,17 +21,19 @@ import (
 	"ghcall/internal/pipeline"
 )
 
-// execCommandContext is overridden in tests so Run can be exercised without
-// a real docker binary or containers.
-var execCommandContext = exec.CommandContext
-
-// RunResult is the outcome of starting one agent container for one PR.
+// RunResult is the outcome of starting one agent run for one PR.
 type RunResult struct {
 	Repo   string
 	Number int
 	Err    error
 	Output string
 }
+
+// launchFunc starts one agent run for one PR. What "started" means is
+// launcher-specific: the docker launcher blocks until the container exits
+// and returns its combined output, the kubernetes launcher returns as soon
+// as the API server has accepted the Job and returns the Job's name.
+type launchFunc func(ctx context.Context, target pipeline.FilterResult, env []string) (output string, err error)
 
 // failingCIStates are the statusCheckRollup values that mark a PR as a
 // candidate for the autofix agent. GitHub reports FAILURE for a check
@@ -49,18 +55,30 @@ func Candidates(results []pipeline.FilterResult) []pipeline.FilterResult {
 	return out
 }
 
-// Run starts one `docker run` per failing-CI PR in results, bounded by
-// cfg.MaxConcurrentRuns concurrent containers, and blocks until every
-// started container has exited (or hit its per-run timeout). It mirrors
-// the bounded worker-pool shape pipeline.checkChanges already uses for
-// phase 1 (a semaphore channel + sync.WaitGroup), just sized by
-// cfg.MaxConcurrentRuns instead of Concurrency.MaxInFlight, and doing an
-// exec.CommandContext per item instead of a REST call.
+// launcherFor builds the launch function cfg selects.
+func launcherFor(cfg config.AgentConfig) (launchFunc, error) {
+	switch cfg.Launcher {
+	case config.LauncherKubernetes:
+		return newKubernetesLauncherFunc(cfg)
+	case config.LauncherDocker, "":
+		return newDockerLauncher(cfg), nil
+	default:
+		return nil, fmt.Errorf("unknown agent launcher %q (want %s|%s)",
+			cfg.Launcher, config.LauncherDocker, config.LauncherKubernetes)
+	}
+}
+
+// Run starts one agent run per failing-CI PR in results, bounded by
+// cfg.MaxConcurrentRuns concurrent launches, and blocks until every launch
+// has returned. It mirrors the bounded worker-pool shape
+// pipeline.checkChanges already uses for phase 1 (a semaphore channel +
+// sync.WaitGroup), just sized by cfg.MaxConcurrentRuns instead of
+// Concurrency.MaxInFlight.
 //
 // env is a fully-resolved list of "NAME=VALUE" strings (the platform token
-// plus whatever cfg.EnvPassthrough named) forwarded into every container
-// via `docker run -e`. Run does not read the process environment itself,
-// so it stays deterministic and testable.
+// plus whatever cfg.EnvPassthrough named) forwarded into every run. Run does
+// not read the process environment itself, so it stays deterministic and
+// testable.
 //
 // If cfg is not Enabled(), or results contains no failing-CI PRs, Run
 // returns nil immediately without starting anything.
@@ -73,6 +91,17 @@ func Run(ctx context.Context, results []pipeline.FilterResult, cfg config.AgentC
 		return nil
 	}
 
+	launch, err := launcherFor(cfg)
+	if err != nil {
+		// Nothing can be started at all; report it once per target so the
+		// caller's per-PR logging still names what was missed.
+		out := make([]RunResult, 0, len(targets))
+		for _, r := range targets {
+			out = append(out, RunResult{Repo: r.Repo, Number: r.PR.Number, Err: err})
+		}
+		return out
+	}
+
 	maxRuns := cfg.MaxConcurrentRuns
 	if maxRuns <= 0 {
 		maxRuns = 1
@@ -80,10 +109,6 @@ func Run(ctx context.Context, results []pipeline.FilterResult, cfg config.AgentC
 	timeout := time.Duration(cfg.PerRunTimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = 25 * time.Minute
-	}
-	dockerBin := cfg.DockerBin
-	if dockerBin == "" {
-		dockerBin = "docker"
 	}
 
 	sem := make(chan struct{}, maxRuns)
@@ -101,24 +126,10 @@ func Run(ctx context.Context, results []pipeline.FilterResult, cfg config.AgentC
 			runCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			args := make([]string, 0, 6+2*len(env))
-			args = append(args, "run", "--rm")
-			for _, kv := range env {
-				args = append(args, "-e", kv)
-			}
-			args = append(args, cfg.Image,
-				"--platform", "github",
-				"--repo", r.Repo,
-				"--pr", strconv.Itoa(r.PR.Number))
-
-			cmd := execCommandContext(runCtx, dockerBin, args...)
-			var buf bytes.Buffer
-			cmd.Stdout = &buf
-			cmd.Stderr = &buf
-			err := cmd.Run()
+			output, err := launch(runCtx, r, env)
 
 			mu.Lock()
-			out = append(out, RunResult{Repo: r.Repo, Number: r.PR.Number, Err: err, Output: buf.String()})
+			out = append(out, RunResult{Repo: r.Repo, Number: r.PR.Number, Err: err, Output: output})
 			mu.Unlock()
 		}(r)
 	}

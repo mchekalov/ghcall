@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "ghcall chart values",
+  "type": "object",
+  "required": ["image", "schedule", "config", "agent"],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "image": {
+      "type": "object",
+      "required": ["registry", "repository"],
+      "properties": {
+        "registry": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+    "schedule": { "type": "string", "minLength": 1 },
+    "timeZone": { "type": "string" },
+    "concurrencyPolicy": { "type": "string", "enum": ["Allow", "Forbid", "Replace"] },
+    "suspend": { "type": "boolean" },
+    "startingDeadlineSeconds": { "type": "integer", "minimum": 0 },
+    "successfulJobsHistoryLimit": { "type": "integer", "minimum": 0 },
+    "failedJobsHistoryLimit": { "type": "integer", "minimum": 0 },
+    "activeDeadlineSeconds": { "type": "integer", "minimum": 1 },
+    "backoffLimit": { "type": "integer", "minimum": 0 },
+    "github": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "token": { "type": "string" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "dsn": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["filters"],
+      "properties": {
+        "github": {
+          "type": "object",
+          "properties": { "token_env": { "type": "string", "minLength": 1 } }
+        },
+        "cache": {
+          "type": "object",
+          "properties": {
+            "driver": { "type": "string", "enum": ["sqlite", "postgres"] },
+            "path": { "type": "string" },
+            "dsn_env": { "type": "string" },
+            "max_open_conns": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "concurrency": {
+          "type": "object",
+          "properties": { "max_in_flight": { "type": "integer", "minimum": 1 } }
+        },
+        "filters": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "repos", "fields"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "repos": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "authors": { "type": "array", "items": { "type": "string" } },
+              "state": { "type": "string", "enum": ["open", "closed", "all"] },
+              "fields": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "enum": ["number", "title", "body", "author", "updated_at", "created_at", "state", "ci_status", "url"]
+                }
+              },
+              "watch_ci": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string" },
+        "maxConcurrentRuns": { "type": "integer", "minimum": 1 },
+        "perRunTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "kubernetes": {
+          "type": "object",
+          "properties": {
+            "namespace": { "type": "string" },
+            "serviceAccount": { "type": "string" },
+            "envFromSecrets": { "type": "array", "items": { "type": "string" } },
+            "imagePullSecrets": { "type": "array", "items": { "type": "string" } },
+            "jobTTLSeconds": { "type": "integer", "minimum": 0 },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+            "resources": { "type": "object" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": { "required": ["image"], "properties": { "image": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "properties": { "create": { "type": "boolean" } }
+    },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "resources": { "type": "object" },
+    "extraEnv": { "type": "array" },
+    "extraEnvFrom": { "type": "array" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
+  }
+}

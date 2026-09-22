@@ -1,0 +1,36 @@
+{{- /*
+Deliberately minimal. The launcher only ever POSTs a Job and relies on the
+API server's own 409 AlreadyExists for dedupe — it never lists, watches,
+reads or deletes anything — so "create" on batch/jobs is the entire
+permission set. Widen this only if the launcher grows a feature that needs
+it (log collection, completion waiting).
+*/ -}}
+{{- if and .Values.agent.enabled .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ghcall.fullname" . }}-agent
+  namespace: {{ default .Release.Namespace .Values.agent.kubernetes.namespace }}
+  labels:
+    {{- include "ghcall.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ghcall.fullname" . }}-agent
+  namespace: {{ default .Release.Namespace .Values.agent.kubernetes.namespace }}
+  labels:
+    {{- include "ghcall.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ghcall.fullname" . }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ghcall.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

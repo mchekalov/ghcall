@@ -54,16 +54,44 @@ type Concurrency struct {
 	MaxInFlight int `yaml:"max_in_flight"`
 }
 
+// Agent launcher names accepted by agent.launcher.
+const (
+	LauncherDocker     = "docker"
+	LauncherKubernetes = "kubernetes"
+)
+
 // AgentConfig controls the CI-autofix agent trigger: for every PR a filter
-// reports with a failing CI state, ghcall starts one `docker run` of this
-// image. Absent/zero Image means the trigger is disabled entirely — ghcall
-// behaves exactly as before, detect-and-print only.
+// reports with a failing CI state, ghcall starts one run of this image.
+// Absent/zero Image means the trigger is disabled entirely — ghcall behaves
+// exactly as before, detect-and-print only.
+//
+// Launcher picks how that run is started: `docker` shells out to a local
+// container runtime and blocks until it exits, `kubernetes` creates one
+// Job per PR against the in-cluster API server and returns immediately.
 type AgentConfig struct {
-	Image             string   `yaml:"image"`
-	DockerBin         string   `yaml:"docker_bin"`
-	EnvPassthrough    []string `yaml:"env_passthrough"`
-	MaxConcurrentRuns int      `yaml:"max_concurrent_runs"`
-	PerRunTimeoutSec  int      `yaml:"per_run_timeout_seconds"`
+	Image             string           `yaml:"image"`
+	Launcher          string           `yaml:"launcher"`
+	DockerBin         string           `yaml:"docker_bin"`
+	EnvPassthrough    []string         `yaml:"env_passthrough"`
+	MaxConcurrentRuns int              `yaml:"max_concurrent_runs"`
+	PerRunTimeoutSec  int              `yaml:"per_run_timeout_seconds"`
+	Kubernetes        KubernetesConfig `yaml:"kubernetes"`
+}
+
+// KubernetesConfig configures the Job the kubernetes launcher creates.
+// EnvFromSecrets is how the agent's own credentials (Bedrock/LiteLLM) reach
+// it: they are mounted onto the agent Job directly, so they never have to be
+// present in ghcall's own pod and EnvPassthrough can stay empty in-cluster.
+type KubernetesConfig struct {
+	Namespace        string            `yaml:"namespace"`
+	ServiceAccount   string            `yaml:"service_account"`
+	EnvFromSecrets   []string          `yaml:"env_from_secrets"`
+	ImagePullSecrets []string          `yaml:"image_pull_secrets"`
+	JobTTLSeconds    int               `yaml:"job_ttl_seconds"`
+	Labels           map[string]string `yaml:"labels"`
+	// Resources is passed through verbatim into the container spec, so any
+	// shape the API server accepts works without ghcall knowing about it.
+	Resources map[string]any `yaml:"resources"`
 }
 
 // Enabled reports whether the agent trigger should run at all.
@@ -125,6 +153,7 @@ const (
 	defaultDockerBin         = "docker"
 	defaultMaxConcurrentRuns = 2
 	defaultPerRunTimeoutSec  = 25 * 60 // 25 minutes
+	defaultJobTTLSeconds     = 3600    // also the kubernetes launcher's dedupe window
 )
 
 // Load reads, defaults, and validates the config file at path.
@@ -175,8 +204,14 @@ func (c *Config) applyDefaults() {
 		}
 	}
 	if c.Agent.Enabled() {
+		if c.Agent.Launcher == "" {
+			c.Agent.Launcher = LauncherDocker
+		}
 		if c.Agent.DockerBin == "" {
 			c.Agent.DockerBin = defaultDockerBin
+		}
+		if c.Agent.Kubernetes.JobTTLSeconds <= 0 {
+			c.Agent.Kubernetes.JobTTLSeconds = defaultJobTTLSeconds
 		}
 		if c.Agent.MaxConcurrentRuns <= 0 {
 			c.Agent.MaxConcurrentRuns = defaultMaxConcurrentRuns
@@ -201,6 +236,14 @@ func (c *Config) validate() error {
 		}
 	default:
 		return fmt.Errorf("cache: invalid driver %q (want %s|%s)", c.Cache.Driver, DriverSQLite, DriverPostgres)
+	}
+	if c.Agent.Enabled() {
+		switch c.Agent.Launcher {
+		case LauncherDocker, LauncherKubernetes:
+		default:
+			return fmt.Errorf("agent: invalid launcher %q (want %s|%s)",
+				c.Agent.Launcher, LauncherDocker, LauncherKubernetes)
+		}
 	}
 	if len(c.Filters) == 0 {
 		return fmt.Errorf("no filters defined")

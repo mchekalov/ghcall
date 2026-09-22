@@ -1,0 +1,106 @@
+{{- $tokenEnv := default "GITHUB_TOKEN" (dig "github" "token_env" "" .Values.config) -}}
+{{- $dsnEnv := default "GHCALL_DB_DSN" (dig "cache" "dsn_env" "" .Values.config) -}}
+{{- $wantDSN := eq (dig "cache" "driver" "sqlite" .Values.config) "postgres" -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "ghcall.fullname" . }}
+  labels:
+    {{- include "ghcall.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  {{- with .Values.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  suspend: {{ .Values.suspend }}
+  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "ghcall.labels" . | nindent 8 }}
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      template:
+        metadata:
+          annotations:
+            # Forces the next scheduled Job to pick up an edited config
+            # instead of silently reusing the old one.
+            checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+            {{- with .Values.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          labels:
+            {{- include "ghcall.selectorLabels" . | nindent 12 }}
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "ghcall.serviceAccountName" . }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: ghcall
+              image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args: ["-config", "/etc/ghcall/config.yaml"]
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              env:
+                - name: {{ $tokenEnv }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ghcall.githubSecretName" . }}
+                      key: {{ include "ghcall.githubSecretKey" . }}
+                {{- if $wantDSN }}
+                - name: {{ $dsnEnv }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "ghcall.databaseSecretName" . }}
+                      key: {{ include "ghcall.databaseSecretKey" . }}
+                {{- end }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- with .Values.extraEnvFrom }}
+              envFrom:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/ghcall
+                  readOnly: true
+                # The root filesystem is read-only; this is the only writable
+                # path ghcall gets. A sqlite cache.path must live under it,
+                # and is then ephemeral — which is why the default driver
+                # here is postgres.
+                - name: state
+                  mountPath: /var/cache/ghcall
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "ghcall.fullname" . }}
+            - name: state
+              emptyDir: {}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
