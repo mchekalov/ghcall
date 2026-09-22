@@ -1,0 +1,6 @@
+enabled: true
+ecosystems: [go]
+verify: tests
+max_attempts: 2
+auto_merge_pure_bumps: true
+dry_run: false
