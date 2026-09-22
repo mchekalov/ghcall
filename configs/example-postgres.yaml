@@ -1,0 +1,33 @@
+# Postgres-backed ghcall: the same config as example.yaml, but with the cache
+# in a shared database instead of a local SQLite file. This is what a
+# Kubernetes deployment uses — no PVC, no single-writer bottleneck, and the
+# cache survives the pod.
+#
+# ghcall does not provision the database; point it at an existing one.
+
+github:
+  token_env: GITHUB_TOKEN
+
+cache:
+  driver: postgres
+  # The DSN carries the database password, so it is read from the environment
+  # and never written in this file — which is meant to be mountable as a
+  # ConfigMap. Example value:
+  #   postgres://ghcall:secret@postgres:5432/ghcall?sslmode=require
+  dsn_env: GHCALL_DB_DSN
+  # Connection pool ceiling. 0 (or absent) derives it from
+  # concurrency.max_in_flight + 2, leaving headroom for phases 2 and 3.
+  max_open_conns: 0
+
+concurrency:
+  max_in_flight: 15
+
+filters:
+  - name: ci-watch
+    repos:
+      - mchekalov/ghcall
+    authors:
+      - mchekalov
+    state: open
+    fields: [number, title, author, updated_at, ci_status]
+    watch_ci: true

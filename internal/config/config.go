@@ -23,8 +23,31 @@ type GitHubConfig struct {
 	TokenEnv string `yaml:"token_env"`
 }
 
+// Cache driver names accepted by cache.driver.
+const (
+	DriverSQLite   = "sqlite"
+	DriverPostgres = "postgres"
+)
+
+// CacheConfig selects and configures the cache backend. Path applies to the
+// sqlite driver only; DSNEnv and MaxOpenConns to postgres only. The DSN is
+// read from the environment rather than the YAML on purpose: it carries the
+// database password, and the YAML is meant to be mountable as a ConfigMap.
 type CacheConfig struct {
-	Path string `yaml:"path"`
+	Driver       string `yaml:"driver"`
+	Path         string `yaml:"path"`
+	DSNEnv       string `yaml:"dsn_env"`
+	MaxOpenConns int    `yaml:"max_open_conns"`
+}
+
+// DSN returns the PostgreSQL connection string from the configured
+// environment variable.
+func (c CacheConfig) DSN() (string, error) {
+	dsn := os.Getenv(c.DSNEnv)
+	if dsn == "" {
+		return "", fmt.Errorf("environment variable %s is not set", c.DSNEnv)
+	}
+	return dsn, nil
 }
 
 type Concurrency struct {
@@ -97,6 +120,7 @@ var validStates = map[string]bool{"open": true, "closed": true, "all": true}
 const (
 	defaultTokenEnv          = "GITHUB_TOKEN"
 	defaultCachePath         = "~/.cache/ghcall/cache.db"
+	defaultCacheDSNEnv       = "GHCALL_DB_DSN"
 	defaultMaxInFlight       = 15
 	defaultDockerBin         = "docker"
 	defaultMaxConcurrentRuns = 2
@@ -126,14 +150,29 @@ func (c *Config) applyDefaults() {
 	if c.GitHub.TokenEnv == "" {
 		c.GitHub.TokenEnv = defaultTokenEnv
 	}
-	if c.Cache.Path == "" {
-		c.Cache.Path = defaultCachePath
-	}
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(c.Cache.Path, "~/") {
-		c.Cache.Path = filepath.Join(home, c.Cache.Path[2:])
+	if c.Cache.Driver == "" {
+		c.Cache.Driver = DriverSQLite
 	}
 	if c.Concurrency.MaxInFlight <= 0 {
 		c.Concurrency.MaxInFlight = defaultMaxInFlight
+	}
+	switch c.Cache.Driver {
+	case DriverSQLite:
+		if c.Cache.Path == "" {
+			c.Cache.Path = defaultCachePath
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(c.Cache.Path, "~/") {
+			c.Cache.Path = filepath.Join(home, c.Cache.Path[2:])
+		}
+	case DriverPostgres:
+		if c.Cache.DSNEnv == "" {
+			c.Cache.DSNEnv = defaultCacheDSNEnv
+		}
+		if c.Cache.MaxOpenConns <= 0 {
+			// Phase 1 runs MaxInFlight goroutines that all write; leave two
+			// spare connections for phases 2 and 3.
+			c.Cache.MaxOpenConns = c.Concurrency.MaxInFlight + 2
+		}
 	}
 	if c.Agent.Enabled() {
 		if c.Agent.DockerBin == "" {
@@ -154,6 +193,15 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
+	switch c.Cache.Driver {
+	case DriverSQLite:
+	case DriverPostgres:
+		if c.Cache.DSNEnv == "" {
+			return fmt.Errorf("cache: driver %s requires dsn_env", DriverPostgres)
+		}
+	default:
+		return fmt.Errorf("cache: invalid driver %q (want %s|%s)", c.Cache.Driver, DriverSQLite, DriverPostgres)
+	}
 	if len(c.Filters) == 0 {
 		return fmt.Errorf("no filters defined")
 	}

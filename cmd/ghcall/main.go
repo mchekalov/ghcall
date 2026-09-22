@@ -41,7 +41,7 @@ func main() {
 		log.Fatalf("ghcall: %v", err)
 	}
 
-	c, err := cache.Open(cfg.Cache.Path)
+	c, err := cache.Open(cfg.Cache)
 	if err != nil {
 		log.Fatalf("ghcall: %v", err)
 	}

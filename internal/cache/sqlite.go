@@ -1,5 +1,3 @@
-// Package cache persists repo change-detection state and watched-PR state
-// between ghcall runs, in a local SQLite file.
 package cache
 
 import (
@@ -12,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS repos (
 	owner            TEXT NOT NULL,
 	name             TEXT NOT NULL,
@@ -34,32 +32,12 @@ CREATE TABLE IF NOT EXISTS watched_prs (
 );
 `
 
-// RepoState is the cached change-detection state for one repo.
-type RepoState struct {
-	Owner         string
-	Name          string
-	ETag          string
-	PushedAt      string
-	LastCheckedAt time.Time
-	LastPRCursor  string
-}
-
-// WatchedPR is a cached open PR being tracked for CI status changes.
-type WatchedPR struct {
-	Owner     string
-	Name      string
-	Number    int
-	UpdatedAt string
-	CIState   string
-	IsOpen    bool
-}
-
-type Cache struct {
+type sqliteStore struct {
 	db *sql.DB
 }
 
-// Open opens (creating if needed) the SQLite cache at path and applies the schema.
-func Open(path string) (*Cache, error) {
+// openSQLite opens (creating if needed) the SQLite cache at path and applies the schema.
+func openSQLite(path string) (*sqliteStore, error) {
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating cache dir %s: %w", dir, err)
@@ -73,17 +51,17 @@ func Open(path string) (*Cache, error) {
 	// SQLite only supports one writer at a time, so serialize through a
 	// single connection rather than hitting SQLITE_BUSY under concurrency.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrating cache %s: %w", path, err)
 	}
-	return &Cache{db: db}, nil
+	return &sqliteStore{db: db}, nil
 }
 
-func (c *Cache) Close() error { return c.db.Close() }
+func (c *sqliteStore) Close() error { return c.db.Close() }
 
 // GetRepo returns the cached state for a repo, or nil if it has never been seen.
-func (c *Cache) GetRepo(owner, name string) (*RepoState, error) {
+func (c *sqliteStore) GetRepo(owner, name string) (*RepoState, error) {
 	row := c.db.QueryRow(
 		`SELECT owner, name, etag, pushed_at, last_checked_at, last_pr_cursor
 		 FROM repos WHERE owner = ? AND name = ?`, owner, name)
@@ -105,7 +83,7 @@ func (c *Cache) GetRepo(owner, name string) (*RepoState, error) {
 }
 
 // UpsertRepo writes back a repo's change-detection state.
-func (c *Cache) UpsertRepo(s RepoState) error {
+func (c *sqliteStore) UpsertRepo(s RepoState) error {
 	_, err := c.db.Exec(`
 		INSERT INTO repos (owner, name, etag, pushed_at, last_checked_at, last_pr_cursor)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -122,7 +100,7 @@ func (c *Cache) UpsertRepo(s RepoState) error {
 }
 
 // ListOpenWatchedPRs returns all currently-open watched PRs, for the CI-status refresh pass.
-func (c *Cache) ListOpenWatchedPRs() ([]WatchedPR, error) {
+func (c *sqliteStore) ListOpenWatchedPRs() ([]WatchedPR, error) {
 	rows, err := c.db.Query(
 		`SELECT owner, name, number, updated_at, ci_state, is_open
 		 FROM watched_prs WHERE is_open = 1`)
@@ -147,7 +125,7 @@ func (c *Cache) ListOpenWatchedPRs() ([]WatchedPR, error) {
 }
 
 // UpsertWatchedPR records or updates a tracked PR's state.
-func (c *Cache) UpsertWatchedPR(p WatchedPR) error {
+func (c *sqliteStore) UpsertWatchedPR(p WatchedPR) error {
 	isOpen := 0
 	if p.IsOpen {
 		isOpen = 1
@@ -167,7 +145,7 @@ func (c *Cache) UpsertWatchedPR(p WatchedPR) error {
 }
 
 // DeleteWatchedPR drops a PR from the watch list (e.g. once closed).
-func (c *Cache) DeleteWatchedPR(owner, name string, number int) error {
+func (c *sqliteStore) DeleteWatchedPR(owner, name string, number int) error {
 	_, err := c.db.Exec(
 		`DELETE FROM watched_prs WHERE owner = ? AND name = ? AND number = ?`,
 		owner, name, number)
