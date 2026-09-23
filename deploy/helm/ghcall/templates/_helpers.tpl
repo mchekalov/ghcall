@@ -56,6 +56,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "token" .Values.github.existingSecret.key -}}
 {{- end -}}
 
+{{/* Name of the Secret holding the GitLab PAT. Only referenced when some filter uses provider: gitlab. */}}
+{{- define "ghcall.gitlabSecretName" -}}
+{{- default (printf "%s-credentials" (include "ghcall.fullname" .)) .Values.gitlab.existingSecret.name -}}
+{{- end -}}
+
+{{- define "ghcall.gitlabSecretKey" -}}
+{{- default "gitlab-token" .Values.gitlab.existingSecret.key -}}
+{{- end -}}
+
+{{/* True when any filter targets GitLab, i.e. when ghcall needs a GitLab token. */}}
+{{- define "ghcall.usesGitLab" -}}
+{{- range (dig "filters" (list) .Values.config) -}}
+{{- if eq (default "github" .provider) "gitlab" -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "ghcall.databaseSecretName" -}}
 {{- default (printf "%s-credentials" (include "ghcall.fullname" .)) .Values.database.existingSecret.name -}}
 {{- end -}}
@@ -66,7 +82,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/* True when the chart must render its own Secret from inline values. */}}
 {{- define "ghcall.createSecret" -}}
-{{- if or (and .Values.github.token (not .Values.github.existingSecret.name)) (and .Values.database.dsn (not .Values.database.existingSecret.name)) -}}
+{{- if or
+      (and .Values.github.token (not .Values.github.existingSecret.name))
+      (and .Values.gitlab.token (not .Values.gitlab.existingSecret.name))
+      (and .Values.database.dsn (not .Values.database.existingSecret.name)) -}}
 true
 {{- end -}}
 {{- end -}}

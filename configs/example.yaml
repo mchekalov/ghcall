@@ -1,5 +1,12 @@
 github:
   token_env: GITHUB_TOKEN   # ghcall reads a PAT/App token from this env var
+  # base_url: https://api.github.com          # override both for GitHub Enterprise
+  # graphql_url: https://api.github.com/graphql
+
+# Required only when a filter sets `provider: gitlab` — see configs/gitlab.yaml.
+# gitlab:
+#   base_url: https://git.example.com   # the instance root, not its /api path
+#   token_env: GITLAB_TOKEN
 
 cache:
   driver: sqlite                  # sqlite (default) | postgres — see example-postgres.yaml
@@ -25,6 +32,8 @@ agent:
     - CLAUDE_CODE_SKIP_BEDROCK_AUTH
     - ANTHROPIC_MODEL
 
+# Every filter runs against one provider: `github` (the default) or `gitlab`.
+# Valid `fields` are: number, title, body, author, updated_at, state, ci_status.
 filters:
   # Case 1: watch specific repos, only PRs from these authors, with CI status.
   - name: ci-watch

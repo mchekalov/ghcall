@@ -10,15 +10,19 @@ import (
 
 	"ghcall/internal/config"
 	"ghcall/internal/pipeline"
+	"ghcall/internal/vcs"
 )
 
 func TestCandidates(t *testing.T) {
 	results := []pipeline.FilterResult{
-		{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "SUCCESS"}},
-		{Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "FAILURE"}},
-		{Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "ERROR"}},
-		{Repo: "o/d", PR: pipeline.PullRequestResult{Number: 4, CIState: "PENDING"}},
-		{Repo: "o/e", PR: pipeline.PullRequestResult{Number: 5, CIState: ""}},
+		{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "SUCCESS"}},
+		{Provider: vcs.GitHub, Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "FAILURE"}},
+		{Provider: vcs.GitHub, Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "ERROR"}},
+		{Provider: vcs.GitHub, Repo: "o/d", PR: pipeline.PullRequestResult{Number: 4, CIState: "PENDING"}},
+		{Provider: vcs.GitHub, Repo: "o/e", PR: pipeline.PullRequestResult{Number: 5, CIState: ""}},
+		// Failing CI, but on GitLab: the agent container cannot be driven
+		// from outside a GitLab pipeline, so this must not start a run.
+		{Provider: vcs.GitLab, Repo: "group/sub/proj", PR: pipeline.PullRequestResult{Number: 6, CIState: "FAILURE"}},
 	}
 
 	got := Candidates(results)
@@ -28,17 +32,41 @@ func TestCandidates(t *testing.T) {
 	if got[0].PR.Number != 2 || got[1].PR.Number != 3 {
 		t.Fatalf("unexpected candidates: %+v", got)
 	}
+
+	skipped := Skipped(results)
+	if len(skipped) != 1 || skipped[0].PR.Number != 6 {
+		t.Fatalf("Skipped = %+v, want just the failing GitLab MR", skipped)
+	}
+}
+
+// A GitLab-only result set must not start anything at all, even though its
+// CI state is one the trigger reacts to on GitHub.
+func TestRun_SkipsGitLabCandidates(t *testing.T) {
+	orig := execCommandContext
+	defer func() { execCommandContext = orig }()
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		t.Fatalf("launched a container for a GitLab MR: %s %v", name, args)
+		return nil
+	}
+
+	results := []pipeline.FilterResult{
+		{Provider: vcs.GitLab, Repo: "group/sub/proj", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}},
+	}
+	cfg := config.AgentConfig{Image: "img", MaxConcurrentRuns: 1, PerRunTimeoutSec: 5}
+	if out := Run(context.Background(), results, cfg, nil); out != nil {
+		t.Fatalf("GitLab-only results should start nothing, got %+v", out)
+	}
 }
 
 func TestRun_DisabledOrNoCandidates(t *testing.T) {
-	failing := []pipeline.FilterResult{{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
+	failing := []pipeline.FilterResult{{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
 
 	if out := Run(context.Background(), failing, config.AgentConfig{}, nil); out != nil {
 		t.Fatalf("disabled agent config (no Image) should return nil, got %+v", out)
 	}
 
 	enabled := config.AgentConfig{Image: "img", MaxConcurrentRuns: 1, PerRunTimeoutSec: 5}
-	green := []pipeline.FilterResult{{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "SUCCESS"}}}
+	green := []pipeline.FilterResult{{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "SUCCESS"}}}
 	if out := Run(context.Background(), green, enabled, nil); out != nil {
 		t.Fatalf("no failing-CI PRs should return nil, got %+v", out)
 	}
@@ -67,9 +95,9 @@ func TestRun_InvokesDockerPerCandidateAndCapturesResult(t *testing.T) {
 	}
 
 	results := []pipeline.FilterResult{
-		{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}},
-		{Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "ERROR"}},
-		{Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "SUCCESS"}}, // not a candidate
+		{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}},
+		{Provider: vcs.GitHub, Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "ERROR"}},
+		{Provider: vcs.GitHub, Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "SUCCESS"}}, // not a candidate
 	}
 	cfg := config.AgentConfig{Image: "autofix:latest", MaxConcurrentRuns: 2, PerRunTimeoutSec: 5}
 	env := []string{"GITHUB_TOKEN=tok", "AWS_BEARER_TOKEN_BEDROCK=bed"}
@@ -116,7 +144,7 @@ func TestRun_CustomDockerBin(t *testing.T) {
 		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
 	}
 
-	results := []pipeline.FilterResult{{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
+	results := []pipeline.FilterResult{{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
 	cfg := config.AgentConfig{Image: "img", DockerBin: "podman", MaxConcurrentRuns: 1, PerRunTimeoutSec: 5}
 
 	Run(context.Background(), results, cfg, nil)
@@ -156,8 +184,9 @@ func TestRun_RespectsMaxConcurrentRuns(t *testing.T) {
 	var results []pipeline.FilterResult
 	for i := 1; i <= 6; i++ {
 		results = append(results, pipeline.FilterResult{
-			Repo: fmt.Sprintf("o/r%d", i),
-			PR:   pipeline.PullRequestResult{Number: i, CIState: "FAILURE"},
+			Provider: vcs.GitHub,
+			Repo:     fmt.Sprintf("o/r%d", i),
+			PR:       pipeline.PullRequestResult{Number: i, CIState: "FAILURE"},
 		})
 	}
 	cfg := config.AgentConfig{Image: "img", MaxConcurrentRuns: 2, PerRunTimeoutSec: 5}
@@ -185,7 +214,7 @@ func TestRun_PerRunTimeout(t *testing.T) {
 		return exec.CommandContext(ctx, "sleep", "5")
 	}
 
-	results := []pipeline.FilterResult{{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
+	results := []pipeline.FilterResult{{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}}}
 	cfg := config.AgentConfig{Image: "img", MaxConcurrentRuns: 1, PerRunTimeoutSec: 1}
 
 	start := time.Now()

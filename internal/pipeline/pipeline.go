@@ -1,8 +1,12 @@
 // Package pipeline orchestrates ghcall's three-phase fetch per run:
-// cheap REST change-detection, batched GraphQL PR fetches for repos that
+// cheap per-repo change-detection, batched PR fetches for repos that
 // changed, and a CI-status refresh for already-watched open PRs (which
 // repo-level change detection can't see, since check runs don't update a
-// repo's pushed_at).
+// repo's last-push timestamp).
+//
+// Every phase groups its work by provider and hands it to the matching
+// vcs.Provider, so a config that mixes GitHub and GitLab filters runs both
+// in the same pass without either knowing about the other.
 package pipeline
 
 import (
@@ -14,13 +18,22 @@ import (
 
 	"ghcall/internal/cache"
 	"ghcall/internal/config"
-	"ghcall/internal/github"
+	"ghcall/internal/vcs"
 )
 
-const (
-	graphqlBatchSize = 50 // repos per aliased GraphQL request
-	prPerRepo        = 20 // most-recently-updated PRs fetched per repo
-)
+const prPerRepo = 20 // most-recently-updated PRs fetched per repo
+
+// batchSizeFor is how many repos go into one aliased query. GitHub's node
+// cap is generous; GitLab's GraphQL enforces a tighter query-complexity
+// limit, so it gets smaller batches.
+func batchSizeFor(provider string) int {
+	switch provider {
+	case vcs.GitLab:
+		return 20
+	default:
+		return 50
+	}
+}
 
 // PullRequestResult is the data ghcall reports for one matching PR.
 type PullRequestResult struct {
@@ -36,29 +49,42 @@ type PullRequestResult struct {
 	CIChanged bool `json:"ci_changed,omitempty"`
 }
 
-// FilterResult attributes a matched PR back to the named filter that found it.
+// FilterResult attributes a matched PR back to the named filter that found
+// it. Provider is what tells a consumer whether Repo names a GitHub repo or
+// a GitLab project path, and whether PR.Number is a PR number or an MR iid.
 type FilterResult struct {
-	Filter string             `json:"filter"`
-	Repo   string             `json:"repo"`
-	PR     PullRequestResult  `json:"pr"`
+	Filter   string            `json:"filter"`
+	Provider string            `json:"provider"`
+	Repo     string            `json:"repo"`
+	PR       PullRequestResult `json:"pr"`
 }
 
 type Pipeline struct {
-	cfg  *config.Config
-	rest *github.RESTClient
-	gql  *github.GraphQLClient
-	c    cache.Store
+	cfg       *config.Config
+	providers map[string]vcs.Provider
+	c         cache.Store
 }
 
-func New(cfg *config.Config, rest *github.RESTClient, gql *github.GraphQLClient, c cache.Store) *Pipeline {
-	return &Pipeline{cfg: cfg, rest: rest, gql: gql, c: c}
+// New builds a pipeline over the providers keyed by vcs.Provider.Name().
+// A config referencing a provider that isn't in the map fails at run time
+// with a named error rather than a nil dereference.
+func New(cfg *config.Config, providers map[string]vcs.Provider, c cache.Store) *Pipeline {
+	return &Pipeline{cfg: cfg, providers: providers, c: c}
+}
+
+func (p *Pipeline) providerFor(ref vcs.Ref) (vcs.Provider, error) {
+	prov, ok := p.providers[ref.Provider]
+	if !ok {
+		return nil, fmt.Errorf("no client configured for provider %q (repo %s)", ref.Provider, ref)
+	}
+	return prov, nil
 }
 
 // repoNeeds is the union, across every filter that references a repo, of
 // what phase 2 must fetch for it.
 type repoNeeds struct {
 	states map[string]bool
-	fields github.FieldSet
+	fields vcs.FieldSet
 }
 
 func statesFor(state string) []string {
@@ -72,8 +98,8 @@ func statesFor(state string) []string {
 	}
 }
 
-func fieldSetFor(fields []string) github.FieldSet {
-	var fs github.FieldSet
+func fieldSetFor(fields []string) vcs.FieldSet {
+	var fs vcs.FieldSet
 	for _, f := range fields {
 		switch f {
 		case "body":
@@ -85,8 +111,8 @@ func fieldSetFor(fields []string) github.FieldSet {
 	return fs
 }
 
-func (p *Pipeline) collectRepoNeeds() (map[config.RepoRef]*repoNeeds, error) {
-	needs := map[config.RepoRef]*repoNeeds{}
+func (p *Pipeline) collectRepoNeeds() (map[vcs.Ref]*repoNeeds, error) {
+	needs := map[vcs.Ref]*repoNeeds{}
 	for _, f := range p.cfg.Filters {
 		refs, err := f.RepoRefs()
 		if err != nil {
@@ -104,7 +130,7 @@ func (p *Pipeline) collectRepoNeeds() (map[config.RepoRef]*repoNeeds, error) {
 			for _, s := range states {
 				n.states[s] = true
 			}
-			n.fields = github.MergeFieldSets(n.fields, fs)
+			n.fields = vcs.MergeFieldSets(n.fields, fs)
 		}
 	}
 	return needs, nil
@@ -113,14 +139,15 @@ func (p *Pipeline) collectRepoNeeds() (map[config.RepoRef]*repoNeeds, error) {
 // dirtyRepo is a repo phase 1 found changed, carrying the PR-updated_at
 // cursor from *before* this run so phase 2 can tell which PRs are new.
 type dirtyRepo struct {
-	ref       config.RepoRef
+	ref       vcs.Ref
 	oldCursor string
 }
 
-// checkChanges runs phase 1: a bounded-concurrency conditional GET per repo.
-// Unchanged repos (304) cost nothing against the rate limit and are dropped
-// here without ever reaching phase 2.
-func (p *Pipeline) checkChanges(repos []config.RepoRef) ([]dirtyRepo, error) {
+// checkChanges runs phase 1: a bounded-concurrency conditional GET per repo,
+// across all providers at once. Unchanged repos (304, or an unmoved activity
+// timestamp) cost nothing against the rate limit and are dropped here without
+// ever reaching phase 2.
+func (p *Pipeline) checkChanges(repos []vcs.Ref) ([]dirtyRepo, error) {
 	sem := make(chan struct{}, p.cfg.Concurrency.MaxInFlight)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -136,23 +163,28 @@ func (p *Pipeline) checkChanges(repos []config.RepoRef) ([]dirtyRepo, error) {
 	}
 
 	for _, ref := range repos {
+		prov, err := p.providerFor(ref)
+		if err != nil {
+			return nil, err
+		}
+
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(ref config.RepoRef) {
+		go func(ref vcs.Ref, prov vcs.Provider) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			prev, err := p.c.GetRepo(ref.Owner, ref.Name)
+			prev, err := p.c.GetRepo(ref)
 			if err != nil {
 				fail(err)
 				return
 			}
-			var etag string
+			var etag, pushedAt string
 			if prev != nil {
-				etag = prev.ETag
+				etag, pushedAt = prev.ETag, prev.PushedAt
 			}
 
-			res, err := p.rest.CheckRepo(ref.Owner, ref.Name, etag)
+			res, err := prov.CheckRepo(ref, etag, pushedAt)
 			if err != nil {
 				fail(err)
 				return
@@ -166,7 +198,7 @@ func (p *Pipeline) checkChanges(repos []config.RepoRef) ([]dirtyRepo, error) {
 				cursor = prev.LastPRCursor
 			}
 			if err := p.c.UpsertRepo(cache.RepoState{
-				Owner: ref.Owner, Name: ref.Name,
+				Ref:  ref,
 				ETag: res.ETag, PushedAt: res.PushedAt,
 				LastCheckedAt: time.Now().UTC(), LastPRCursor: cursor,
 			}); err != nil {
@@ -177,7 +209,7 @@ func (p *Pipeline) checkChanges(repos []config.RepoRef) ([]dirtyRepo, error) {
 			mu.Lock()
 			dirty = append(dirty, dirtyRepo{ref: ref, oldCursor: cursor})
 			mu.Unlock()
-		}(ref)
+		}(ref, prov)
 	}
 	wg.Wait()
 	return dirty, firstErr
@@ -185,71 +217,94 @@ func (p *Pipeline) checkChanges(repos []config.RepoRef) ([]dirtyRepo, error) {
 
 // fetchedRepo pairs a repo's freshly-fetched PRs with its pre-run cursor.
 type fetchedRepo struct {
-	prs       []github.PullRequest
+	prs       []vcs.PullRequest
 	oldCursor string
 }
 
 // fetchDirtyRepoPRs runs phase 2: batched, aliased GraphQL fetches for
-// repos phase 1 flagged dirty, chunked to keep each request's node count
-// well under GraphQL's cap. It also advances each repo's last_pr_cursor.
-func (p *Pipeline) fetchDirtyRepoPRs(dirty []dirtyRepo, needs map[config.RepoRef]*repoNeeds) (map[config.RepoRef]fetchedRepo, error) {
-	result := make(map[config.RepoRef]fetchedRepo, len(dirty))
+// repos phase 1 flagged dirty, grouped by provider and chunked to that
+// provider's batch size. It also advances each repo's last_pr_cursor.
+func (p *Pipeline) fetchDirtyRepoPRs(dirty []dirtyRepo, needs map[vcs.Ref]*repoNeeds) (map[vcs.Ref]fetchedRepo, error) {
+	result := make(map[vcs.Ref]fetchedRepo, len(dirty))
 	if len(dirty) == 0 {
 		return result, nil
 	}
 
-	for start := 0; start < len(dirty); start += graphqlBatchSize {
-		end := min(start+graphqlBatchSize, len(dirty))
-		batch := dirty[start:end]
+	byProvider := map[string][]dirtyRepo{}
+	for _, d := range dirty {
+		byProvider[d.ref.Provider] = append(byProvider[d.ref.Provider], d)
+	}
 
-		queries := make([]github.RepoQuery, len(batch))
-		for i, d := range batch {
-			n := needs[d.ref]
-			states := make([]string, 0, len(n.states))
-			for s := range n.states {
-				states = append(states, s)
-			}
-			sort.Strings(states)
-			queries[i] = github.RepoQuery{Owner: d.ref.Owner, Name: d.ref.Name, States: states, Fields: n.fields}
-		}
-
-		fetched, _, err := p.gql.FetchRepoPRs(queries, prPerRepo)
+	for _, name := range sortedKeys(byProvider) {
+		repos := byProvider[name]
+		prov, err := p.providerFor(repos[0].ref)
 		if err != nil {
-			return nil, fmt.Errorf("fetching PRs: %w", err)
+			return nil, err
 		}
+		batchSize := batchSizeFor(name)
 
-		for _, d := range batch {
-			prs := fetched[github.RepoRef{Owner: d.ref.Owner, Name: d.ref.Name}]
-			result[d.ref] = fetchedRepo{prs: prs, oldCursor: d.oldCursor}
+		for start := 0; start < len(repos); start += batchSize {
+			end := min(start+batchSize, len(repos))
+			batch := repos[start:end]
 
-			// GraphQL returns PRs sorted updated-desc, and RFC3339 timestamps
-			// sort correctly as plain strings, so the first node (if any) is
-			// the new cursor.
-			newCursor := d.oldCursor
-			if len(prs) > 0 && prs[0].UpdatedAt > newCursor {
-				newCursor = prs[0].UpdatedAt
+			queries := make([]vcs.RepoQuery, len(batch))
+			for i, d := range batch {
+				n := needs[d.ref]
+				states := make([]string, 0, len(n.states))
+				for s := range n.states {
+					states = append(states, s)
+				}
+				sort.Strings(states)
+				queries[i] = vcs.RepoQuery{Ref: d.ref, States: states, Fields: n.fields}
 			}
 
-			prev, err := p.c.GetRepo(d.ref.Owner, d.ref.Name)
+			fetched, err := prov.FetchRepoPRs(queries, prPerRepo)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("fetching PRs from %s: %w", name, err)
 			}
-			if prev == nil {
-				continue // shouldn't happen: phase 1 just upserted this repo
-			}
-			prev.LastPRCursor = newCursor
-			if err := p.c.UpsertRepo(*prev); err != nil {
-				return nil, err
+
+			for _, d := range batch {
+				prs := fetched[d.ref]
+				result[d.ref] = fetchedRepo{prs: prs, oldCursor: d.oldCursor}
+
+				// Providers return PRs sorted updated-desc, and RFC3339
+				// timestamps sort correctly as plain strings, so the first
+				// node (if any) is the new cursor.
+				newCursor := d.oldCursor
+				if len(prs) > 0 && prs[0].UpdatedAt > newCursor {
+					newCursor = prs[0].UpdatedAt
+				}
+
+				prev, err := p.c.GetRepo(d.ref)
+				if err != nil {
+					return nil, err
+				}
+				if prev == nil {
+					continue // shouldn't happen: phase 1 just upserted this repo
+				}
+				prev.LastPRCursor = newCursor
+				if err := p.c.UpsertRepo(*prev); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 	return result, nil
 }
 
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // matchFilters applies each filter's own state/author/updated-since rules
 // to the repos it references, and records any open, CI-watched PR into the
 // watched_prs cache for phase 3 to keep refreshing later.
-func (p *Pipeline) matchFilters(fetched map[config.RepoRef]fetchedRepo) ([]FilterResult, error) {
+func (p *Pipeline) matchFilters(fetched map[vcs.Ref]fetchedRepo) ([]FilterResult, error) {
 	var results []FilterResult
 
 	for _, f := range p.cfg.Filters {
@@ -283,14 +338,15 @@ func (p *Pipeline) matchFilters(fetched map[config.RepoRef]fetchedRepo) ([]Filte
 				}
 
 				results = append(results, FilterResult{
-					Filter: f.Name,
-					Repo:   ref.String(),
-					PR:     resultFromPR(pr),
+					Filter:   f.Name,
+					Provider: ref.Provider,
+					Repo:     ref.String(),
+					PR:       resultFromPR(pr),
 				})
 
 				if f.WatchCI && pr.State == "OPEN" {
 					if err := p.c.UpsertWatchedPR(cache.WatchedPR{
-						Owner: ref.Owner, Name: ref.Name, Number: pr.Number,
+						Ref: ref, Number: pr.Number,
 						UpdatedAt: pr.UpdatedAt, CIState: pr.CIState, IsOpen: true,
 					}); err != nil {
 						return nil, err
@@ -302,7 +358,7 @@ func (p *Pipeline) matchFilters(fetched map[config.RepoRef]fetchedRepo) ([]Filte
 	return results, nil
 }
 
-func resultFromPR(pr github.PullRequest) PullRequestResult {
+func resultFromPR(pr vcs.PullRequest) PullRequestResult {
 	return PullRequestResult{
 		Number: pr.Number, Title: pr.Title, Body: pr.Body, Author: pr.Author,
 		UpdatedAt: pr.UpdatedAt, State: pr.State, CIState: pr.CIState,
@@ -321,17 +377,37 @@ func (p *Pipeline) refreshWatchedCI() ([]FilterResult, error) {
 		return nil, nil
 	}
 
-	refs := make([]github.PRRef, len(watched))
-	for i, w := range watched {
-		refs[i] = github.PRRef{Owner: w.Owner, Name: w.Name, Number: w.Number}
+	byProvider := map[string][]cache.WatchedPR{}
+	for _, w := range watched {
+		byProvider[w.Ref.Provider] = append(byProvider[w.Ref.Provider], w)
 	}
 
-	statuses, _, err := p.gql.RefreshPRStatus(refs)
-	if err != nil {
-		return nil, fmt.Errorf("refreshing CI status: %w", err)
+	statuses := map[vcs.PRRef]vcs.PRStatus{}
+	for _, name := range sortedKeys(byProvider) {
+		group := byProvider[name]
+		prov, err := p.providerFor(group[0].Ref)
+		if err != nil {
+			return nil, err
+		}
+		batchSize := batchSizeFor(name)
+
+		for start := 0; start < len(group); start += batchSize {
+			end := min(start+batchSize, len(group))
+			refs := make([]vcs.PRRef, 0, end-start)
+			for _, w := range group[start:end] {
+				refs = append(refs, w.PRRef())
+			}
+			got, err := prov.RefreshPRStatus(refs)
+			if err != nil {
+				return nil, fmt.Errorf("refreshing CI status on %s: %w", name, err)
+			}
+			for ref, st := range got {
+				statuses[ref] = st
+			}
+		}
 	}
 
-	filterFor := map[config.RepoRef]string{}
+	filterFor := map[vcs.Ref]string{}
 	for _, f := range p.cfg.Filters {
 		if !f.WatchCI {
 			continue
@@ -347,8 +423,7 @@ func (p *Pipeline) refreshWatchedCI() ([]FilterResult, error) {
 
 	var results []FilterResult
 	for _, w := range watched {
-		ref := github.PRRef{Owner: w.Owner, Name: w.Name, Number: w.Number}
-		status, ok := statuses[ref]
+		status, ok := statuses[w.PRRef()]
 		if !ok {
 			continue // PR/repo became inaccessible; leave cached state as-is
 		}
@@ -358,8 +433,9 @@ func (p *Pipeline) refreshWatchedCI() ([]FilterResult, error) {
 
 		if ciChanged && stillOpen {
 			results = append(results, FilterResult{
-				Filter: filterFor[config.RepoRef{Owner: w.Owner, Name: w.Name}],
-				Repo:   w.Owner + "/" + w.Name,
+				Filter:   filterFor[w.Ref],
+				Provider: w.Ref.Provider,
+				Repo:     w.Ref.String(),
 				PR: PullRequestResult{
 					Number: w.Number, UpdatedAt: w.UpdatedAt,
 					State: status.State, CIState: status.CIState, CIChanged: true,
@@ -368,14 +444,14 @@ func (p *Pipeline) refreshWatchedCI() ([]FilterResult, error) {
 		}
 
 		if !stillOpen {
-			if err := p.c.DeleteWatchedPR(w.Owner, w.Name, w.Number); err != nil {
+			if err := p.c.DeleteWatchedPR(w.PRRef()); err != nil {
 				return nil, err
 			}
 			continue
 		}
 		if ciChanged {
 			if err := p.c.UpsertWatchedPR(cache.WatchedPR{
-				Owner: w.Owner, Name: w.Name, Number: w.Number,
+				Ref: w.Ref, Number: w.Number,
 				UpdatedAt: w.UpdatedAt, CIState: status.CIState, IsOpen: true,
 			}); err != nil {
 				return nil, err
@@ -392,11 +468,16 @@ func (p *Pipeline) Run() ([]FilterResult, error) {
 		return nil, err
 	}
 
-	repos := make([]config.RepoRef, 0, len(needs))
+	repos := make([]vcs.Ref, 0, len(needs))
 	for r := range needs {
 		repos = append(repos, r)
 	}
-	sort.Slice(repos, func(i, j int) bool { return repos[i].String() < repos[j].String() })
+	sort.Slice(repos, func(i, j int) bool {
+		if repos[i].Provider != repos[j].Provider {
+			return repos[i].Provider < repos[j].Provider
+		}
+		return repos[i].String() < repos[j].String()
+	})
 
 	dirty, err := p.checkChanges(repos)
 	if err != nil {

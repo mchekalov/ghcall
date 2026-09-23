@@ -46,6 +46,19 @@
         "token": { "type": "string" }
       }
     },
+    "gitlab": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "token": { "type": "string" }
+      }
+    },
     "database": {
       "type": "object",
       "properties": {
@@ -62,10 +75,41 @@
     "config": {
       "type": "object",
       "required": ["filters"],
+      "allOf": [
+        {
+          "$comment": "A gitlab filter needs config.gitlab.base_url, which ghcall would otherwise only reject at startup.",
+          "if": {
+            "properties": {
+              "filters": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": { "provider": { "const": "gitlab" } },
+                  "required": ["provider"]
+                }
+              }
+            },
+            "required": ["filters"]
+          },
+          "then": { "required": ["gitlab"] }
+        }
+      ],
       "properties": {
         "github": {
           "type": "object",
-          "properties": { "token_env": { "type": "string", "minLength": 1 } }
+          "properties": {
+            "token_env": { "type": "string", "minLength": 1 },
+            "base_url": { "type": "string" },
+            "graphql_url": { "type": "string" }
+          }
+        },
+        "gitlab": {
+          "type": "object",
+          "required": ["base_url"],
+          "properties": {
+            "base_url": { "type": "string", "minLength": 1 },
+            "token_env": { "type": "string", "minLength": 1 }
+          }
         },
         "cache": {
           "type": "object",
@@ -88,6 +132,7 @@
             "required": ["name", "repos", "fields"],
             "properties": {
               "name": { "type": "string", "minLength": 1 },
+              "provider": { "type": "string", "enum": ["github", "gitlab"] },
               "repos": { "type": "array", "minItems": 1, "items": { "type": "string" } },
               "authors": { "type": "array", "items": { "type": "string" } },
               "state": { "type": "string", "enum": ["open", "closed", "all"] },
@@ -96,7 +141,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "string",
-                  "enum": ["number", "title", "body", "author", "updated_at", "created_at", "state", "ci_status", "url"]
+                  "enum": ["number", "title", "body", "author", "updated_at", "state", "ci_status"]
                 }
               },
               "watch_ci": { "type": "boolean" }

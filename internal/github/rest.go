@@ -1,16 +1,26 @@
 // Package github holds the two GitHub clients ghcall's pipeline uses:
 // a REST client for cheap conditional change-detection, and a GraphQL
-// client for batched, field-selective PR/CI fetches.
+// client for batched, field-selective PR/CI fetches. Provider pairs them
+// into one vcs.Provider.
+//
+// Both clients take their endpoint as a field rather than a constant, so a
+// GitHub Enterprise install can be pointed at, and so the tests can point
+// at an httptest server.
 package github
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
-const restBase = "https://api.github.com"
+// DefaultRESTBase and DefaultGraphQLEndpoint are github.com's public API.
+const (
+	DefaultRESTBase        = "https://api.github.com"
+	DefaultGraphQLEndpoint = "https://api.github.com/graphql"
+)
 
 // RESTClient does conditional GETs against the REST API. A 304 response
 // costs nothing against the primary rate limit, so this is the cheap
@@ -18,10 +28,23 @@ const restBase = "https://api.github.com"
 type RESTClient struct {
 	httpClient *http.Client
 	token      string
+	baseURL    string
 }
 
+// NewRESTClient targets github.com. Pass a base URL for GitHub Enterprise.
 func NewRESTClient(token string) *RESTClient {
-	return &RESTClient{httpClient: &http.Client{Timeout: 30 * time.Second}, token: token}
+	return NewRESTClientWithBase(token, DefaultRESTBase)
+}
+
+func NewRESTClientWithBase(token, baseURL string) *RESTClient {
+	if baseURL == "" {
+		baseURL = DefaultRESTBase
+	}
+	return &RESTClient{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		token:      token,
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
+	}
 }
 
 // RepoCheckResult is the outcome of a conditional GET /repos/{owner}/{name}.
@@ -33,7 +56,7 @@ type RepoCheckResult struct {
 
 // CheckRepo performs a conditional GET, sending etag as If-None-Match when non-empty.
 func (c *RESTClient) CheckRepo(owner, name, etag string) (RepoCheckResult, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s", restBase, owner, name)
+	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, name)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return RepoCheckResult{}, err

@@ -19,6 +19,7 @@ import (
 
 	"ghcall/internal/config"
 	"ghcall/internal/pipeline"
+	"ghcall/internal/vcs"
 )
 
 // RunResult is the outcome of starting one agent run for one PR.
@@ -44,11 +45,30 @@ var failingCIStates = map[string]bool{
 }
 
 // Candidates filters results down to the PRs the agent should be started
-// for: any result whose CI state indicates a failure.
+// for: any GitHub result whose CI state indicates a failure.
+//
+// GitLab is deliberately excluded. The agent container's `--platform gitlab`
+// mode takes no --repo/--pr: it reads CI_PROJECT_ID and CI_MERGE_REQUEST_IID
+// from the ambient pipeline environment, so it can only be driven from
+// inside a failing GitLab pipeline, not from outside by ghcall. Skipped uses
+// the same rule, so callers can report what was passed over.
 func Candidates(results []pipeline.FilterResult) []pipeline.FilterResult {
 	var out []pipeline.FilterResult
 	for _, r := range results {
-		if failingCIStates[r.PR.CIState] {
+		if failingCIStates[r.PR.CIState] && r.Provider == vcs.GitHub {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Skipped returns the failing-CI results the agent cannot act on — today,
+// every non-GitHub one. Counting these is the measure of what teaching the
+// agent container an outside-in GitLab mode would actually buy.
+func Skipped(results []pipeline.FilterResult) []pipeline.FilterResult {
+	var out []pipeline.FilterResult
+	for _, r := range results {
+		if failingCIStates[r.PR.CIState] && r.Provider != vcs.GitHub {
 			out = append(out, r)
 		}
 	}

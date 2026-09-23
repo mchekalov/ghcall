@@ -10,6 +10,7 @@ import (
 
 	"ghcall/internal/config"
 	"ghcall/internal/pipeline"
+	"ghcall/internal/vcs"
 )
 
 // TestSmokeRealDocker exercises Run against the real docker binary (no
@@ -21,8 +22,9 @@ func TestSmokeRealDocker(t *testing.T) {
 	var results []pipeline.FilterResult
 	for i := 1; i <= 3; i++ {
 		results = append(results, pipeline.FilterResult{
-			Repo: fmt.Sprintf("smoke/repo%d", i),
-			PR:   pipeline.PullRequestResult{Number: i, CIState: "FAILURE"},
+			Provider: vcs.GitHub,
+			Repo:     fmt.Sprintf("smoke/repo%d", i),
+			PR:       pipeline.PullRequestResult{Number: i, CIState: "FAILURE"},
 		})
 	}
 	cfg := config.AgentConfig{

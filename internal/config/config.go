@@ -8,18 +8,33 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"ghcall/internal/vcs"
 )
 
 // Config is the top-level shape of ghcall's config file.
 type Config struct {
 	GitHub      GitHubConfig `yaml:"github"`
+	GitLab      GitLabConfig `yaml:"gitlab"`
 	Cache       CacheConfig  `yaml:"cache"`
 	Concurrency Concurrency  `yaml:"concurrency"`
 	Agent       AgentConfig  `yaml:"agent"`
 	Filters     []Filter     `yaml:"filters"`
 }
 
+// GitHubConfig points at github.com when the URLs are left empty. Set both
+// for a GitHub Enterprise install.
 type GitHubConfig struct {
+	TokenEnv   string `yaml:"token_env"`
+	BaseURL    string `yaml:"base_url"`
+	GraphQLURL string `yaml:"graphql_url"`
+}
+
+// GitLabConfig is required only when some filter sets `provider: gitlab`.
+// BaseURL is the instance root (https://git.example.com), not its /api path;
+// there is no default, since every GitLab ghcall talks to is self-hosted.
+type GitLabConfig struct {
+	BaseURL  string `yaml:"base_url"`
 	TokenEnv string `yaml:"token_env"`
 }
 
@@ -100,26 +115,22 @@ func (a AgentConfig) Enabled() bool { return a.Image != "" }
 // Filter is one named query: a list of repos, an optional author allowlist,
 // a PR state, and the set of fields to fetch/emit for matching PRs.
 type Filter struct {
-	Name    string   `yaml:"name"`
-	Repos   []string `yaml:"repos"`
-	Authors []string `yaml:"authors"`
-	State   string   `yaml:"state"`
-	Fields  []string `yaml:"fields"`
-	WatchCI bool     `yaml:"watch_ci"`
+	Name string `yaml:"name"`
+	// Provider selects the forge this filter's repos live on: github
+	// (default) or gitlab.
+	Provider string   `yaml:"provider"`
+	Repos    []string `yaml:"repos"`
+	Authors  []string `yaml:"authors"`
+	State    string   `yaml:"state"`
+	Fields   []string `yaml:"fields"`
+	WatchCI  bool     `yaml:"watch_ci"`
 }
 
-// RepoRef is an owner/name pair parsed from a Filter's repo list.
-type RepoRef struct {
-	Owner string
-	Name  string
-}
-
-func (r RepoRef) String() string { return r.Owner + "/" + r.Name }
-
-func (f Filter) RepoRefs() ([]RepoRef, error) {
-	refs := make([]RepoRef, 0, len(f.Repos))
+// RepoRefs parses this filter's repo list into provider-tagged refs.
+func (f Filter) RepoRefs() ([]vcs.Ref, error) {
+	refs := make([]vcs.Ref, 0, len(f.Repos))
 	for _, r := range f.Repos {
-		ref, err := ParseRepo(r)
+		ref, err := ParseRepo(f.ProviderOrDefault(), r)
 		if err != nil {
 			return nil, fmt.Errorf("filter %q: %w", f.Name, err)
 		}
@@ -128,25 +139,55 @@ func (f Filter) RepoRefs() ([]RepoRef, error) {
 	return refs, nil
 }
 
-// ParseRepo splits "owner/name" into a RepoRef.
-func ParseRepo(s string) (RepoRef, error) {
-	owner, name, ok := strings.Cut(s, "/")
-	if !ok || owner == "" || name == "" {
-		return RepoRef{}, fmt.Errorf("invalid repo %q, want \"owner/name\"", s)
+// ProviderOrDefault is the filter's provider, defaulting to github for
+// configs written before gitlab support existed.
+func (f Filter) ProviderOrDefault() string {
+	if f.Provider == "" {
+		return vcs.GitHub
 	}
-	return RepoRef{Owner: owner, Name: name}, nil
+	return f.Provider
 }
 
+// ParseRepo splits a repo path into a Ref. The last segment is the repo
+// name and everything before it the owner, because GitLab namespaces nest
+// arbitrarily deep ("group/subgroup/project"). GitHub has no nested
+// namespaces, so an extra slash there is a typo worth rejecting rather
+// than a path that will 404 later.
+func ParseRepo(provider, s string) (vcs.Ref, error) {
+	invalid := func() (vcs.Ref, error) {
+		return vcs.Ref{}, fmt.Errorf("invalid repo %q, want \"owner/name\"", s)
+	}
+	i := strings.LastIndex(s, "/")
+	if i <= 0 || i == len(s)-1 {
+		return invalid()
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == "" {
+			return invalid()
+		}
+	}
+	owner, name := s[:i], s[i+1:]
+	if provider == vcs.GitHub && strings.Contains(owner, "/") {
+		return vcs.Ref{}, fmt.Errorf(
+			"invalid repo %q: github has no nested namespaces, want \"owner/name\"", s)
+	}
+	return vcs.Ref{Provider: provider, Owner: owner, Name: name}, nil
+}
+
+// validFields is exactly the set ghcall fetches and emits. created_at and
+// url used to pass validation without ever being fetched, which made a
+// config look like it asked for something it silently never got; they are
+// rejected now rather than lying.
 var validFields = map[string]bool{
 	"number": true, "title": true, "body": true, "author": true,
-	"updated_at": true, "created_at": true, "state": true,
-	"ci_status": true, "url": true,
+	"updated_at": true, "state": true, "ci_status": true,
 }
 
 var validStates = map[string]bool{"open": true, "closed": true, "all": true}
 
 const (
 	defaultTokenEnv          = "GITHUB_TOKEN"
+	defaultGitLabTokenEnv    = "GITLAB_TOKEN"
 	defaultCachePath         = "~/.cache/ghcall/cache.db"
 	defaultCacheDSNEnv       = "GHCALL_DB_DSN"
 	defaultMaxInFlight       = 15
@@ -178,6 +219,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) applyDefaults() {
 	if c.GitHub.TokenEnv == "" {
 		c.GitHub.TokenEnv = defaultTokenEnv
+	}
+	if c.GitLab.TokenEnv == "" {
+		c.GitLab.TokenEnv = defaultGitLabTokenEnv
 	}
 	if c.Cache.Driver == "" {
 		c.Cache.Driver = DriverSQLite
@@ -224,6 +268,9 @@ func (c *Config) applyDefaults() {
 		if c.Filters[i].State == "" {
 			c.Filters[i].State = "open"
 		}
+		if c.Filters[i].Provider == "" {
+			c.Filters[i].Provider = vcs.GitHub
+		}
 	}
 }
 
@@ -248,6 +295,10 @@ func (c *Config) validate() error {
 	if len(c.Filters) == 0 {
 		return fmt.Errorf("no filters defined")
 	}
+	if c.usesProvider(vcs.GitLab) && c.GitLab.BaseURL == "" {
+		return fmt.Errorf("gitlab: base_url is required when a filter sets provider: %s", vcs.GitLab)
+	}
+
 	seen := map[string]bool{}
 	for _, f := range c.Filters {
 		if f.Name == "" {
@@ -257,6 +308,13 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate filter name %q", f.Name)
 		}
 		seen[f.Name] = true
+
+		switch f.Provider {
+		case vcs.GitHub, vcs.GitLab:
+		default:
+			return fmt.Errorf("filter %q: invalid provider %q (want %s|%s)",
+				f.Name, f.Provider, vcs.GitHub, vcs.GitLab)
+		}
 
 		if len(f.Repos) == 0 {
 			return fmt.Errorf("filter %q: no repos", f.Name)
@@ -281,9 +339,41 @@ func (c *Config) validate() error {
 
 // Token returns the GitHub token from the configured environment variable.
 func (c *Config) Token() (string, error) {
-	tok := os.Getenv(c.GitHub.TokenEnv)
+	return tokenFromEnv(c.GitHub.TokenEnv)
+}
+
+// GitLabToken returns the GitLab personal access token from the configured
+// environment variable. Only needed when some filter uses provider: gitlab.
+func (c *Config) GitLabToken() (string, error) {
+	return tokenFromEnv(c.GitLab.TokenEnv)
+}
+
+func tokenFromEnv(name string) (string, error) {
+	tok := os.Getenv(name)
 	if tok == "" {
-		return "", fmt.Errorf("environment variable %s is not set", c.GitHub.TokenEnv)
+		return "", fmt.Errorf("environment variable %s is not set", name)
 	}
 	return tok, nil
+}
+
+// Providers lists the distinct providers this config's filters reference,
+// so a run only builds — and only demands credentials for — the forges it
+// will actually talk to.
+func (c *Config) Providers() []string {
+	var out []string
+	for _, name := range []string{vcs.GitHub, vcs.GitLab} {
+		if c.usesProvider(name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func (c *Config) usesProvider(name string) bool {
+	for _, f := range c.Filters {
+		if f.ProviderOrDefault() == name {
+			return true
+		}
+	}
+	return false
 }

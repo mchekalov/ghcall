@@ -15,8 +15,10 @@ import (
 	"ghcall/internal/cache"
 	"ghcall/internal/config"
 	"ghcall/internal/github"
+	"ghcall/internal/gitlab"
 	"ghcall/internal/output"
 	"ghcall/internal/pipeline"
+	"ghcall/internal/vcs"
 )
 
 func main() {
@@ -36,7 +38,7 @@ func main() {
 		return
 	}
 
-	token, err := cfg.Token()
+	providers, token, err := buildProviders(cfg)
 	if err != nil {
 		log.Fatalf("ghcall: %v", err)
 	}
@@ -47,10 +49,7 @@ func main() {
 	}
 	defer c.Close()
 
-	rest := github.NewRESTClient(token)
-	gql := github.NewGraphQLClient(token)
-
-	results, err := pipeline.New(cfg, rest, gql, c).Run()
+	results, err := pipeline.New(cfg, providers, c).Run()
 	if err != nil {
 		log.Fatalf("ghcall: %v", err)
 	}
@@ -60,6 +59,16 @@ func main() {
 	}
 
 	if cfg.Agent.Enabled() {
+		if skipped := agent.Skipped(results); len(skipped) > 0 {
+			// Not a failure — the agent container can only fix a GitLab MR
+			// from inside its own pipeline, so these need a change to that
+			// image, not to ghcall. The count is the signal for when that
+			// work becomes worth doing.
+			log.Printf("ghcall: %d failing-CI result(s) skipped: the autofix agent is GitHub-only", len(skipped))
+			for _, r := range skipped {
+				log.Printf("ghcall:   skipped %s %s#%d (%s)", r.Provider, r.Repo, r.PR.Number, r.PR.CIState)
+			}
+		}
 		runResults := agent.Run(context.Background(), results, cfg.Agent, buildAgentEnv(cfg, token))
 		for _, rr := range runResults {
 			switch {
@@ -75,6 +84,36 @@ func main() {
 			}
 		}
 	}
+}
+
+// buildProviders constructs a client per provider the config actually
+// references, and returns the GitHub token alongside (the agent forwards it
+// into every run). A GitLab-only config never asks for a GitHub token, and
+// vice versa.
+func buildProviders(cfg *config.Config) (map[string]vcs.Provider, string, error) {
+	providers := map[string]vcs.Provider{}
+	var githubToken string
+
+	for _, name := range cfg.Providers() {
+		switch name {
+		case vcs.GitHub:
+			tok, err := cfg.Token()
+			if err != nil {
+				return nil, "", err
+			}
+			githubToken = tok
+			providers[name] = github.NewProvider(tok, cfg.GitHub.BaseURL, cfg.GitHub.GraphQLURL)
+		case vcs.GitLab:
+			tok, err := cfg.GitLabToken()
+			if err != nil {
+				return nil, "", err
+			}
+			providers[name] = gitlab.New(cfg.GitLab.BaseURL, tok)
+		default:
+			return nil, "", fmt.Errorf("unknown provider %q", name)
+		}
+	}
+	return providers, githubToken, nil
 }
 
 // buildAgentEnv resolves the env vars forwarded into every agent container:
@@ -96,20 +135,32 @@ func buildAgentEnv(cfg *config.Config, token string) []string {
 // against large repo lists.
 func printDryRun(cfg *config.Config) error {
 	type planned struct {
-		Filter string   `json:"filter"`
-		Repos  []string `json:"repos"`
-		State  string   `json:"state"`
-		Fields []string `json:"fields"`
+		Filter   string   `json:"filter"`
+		Provider string   `json:"provider"`
+		Repos    []string `json:"repos"`
+		State    string   `json:"state"`
+		Fields   []string `json:"fields"`
 	}
 
 	plan := make([]planned, 0, len(cfg.Filters))
 	for _, f := range cfg.Filters {
+		// Parse the refs even though the dry run discards them: nested-path
+		// and provider mistakes are exactly what this mode is for catching.
+		if _, err := f.RepoRefs(); err != nil {
+			return err
+		}
 		repos := append([]string(nil), f.Repos...)
 		sort.Strings(repos)
-		plan = append(plan, planned{Filter: f.Name, Repos: repos, State: f.State, Fields: f.Fields})
+		plan = append(plan, planned{
+			Filter:   f.Name,
+			Provider: f.ProviderOrDefault(),
+			Repos:    repos,
+			State:    f.State,
+			Fields:   f.Fields,
+		})
 	}
 
-	fmt.Fprintln(os.Stderr, "ghcall: dry run — no GitHub calls will be made")
+	fmt.Fprintln(os.Stderr, "ghcall: dry run — no API calls will be made")
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(plan)
