@@ -2,7 +2,7 @@ apiVersion: v2
 name: ghcall
 description: Incremental GitHub PR/CI watcher that optionally triggers an AI CI-autofix agent as a Kubernetes Job
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 home: https://github.com/mchekalov/ghcall
 sources:

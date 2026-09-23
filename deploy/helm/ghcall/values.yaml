@@ -105,6 +105,31 @@ config:
     #   fields: [number, title, author, updated_at, ci_status]
     #   watch_ci: true
 
+# --- sqlite cache storage -----------------------------------------------
+# Only used when config.cache.driver is sqlite; a postgres install renders
+# no PVC whatever is set here. The volume is mounted at /var/cache/ghcall and
+# cache.path defaults to /var/cache/ghcall/cache.db.
+#
+# With enabled=false the file lives on an emptyDir and dies with each run's
+# pod, so every run re-reports every matching PR. With enabled=true it
+# survives, which is also why concurrencyPolicy must stay Forbid: SQLite has
+# one writer, and a ReadWriteOnce volume attaches to one node at a time.
+persistence:
+  enabled: true
+  # Mount this PVC instead of rendering one.
+  existingClaim: ""
+  # Empty uses the cluster default StorageClass; "-" sets
+  # storageClassName: "" (no dynamic provisioning).
+  storageClass: ""
+  # Avoid ReadWriteMany/NFS classes: SQLite's file locking is unreliable
+  # on network filesystems.
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+  annotations: {}
+  # Adds helm.sh/resource-policy: keep, so `helm uninstall` leaves the cache
+  # behind and a reinstall does not re-report (and re-trigger) everything.
+  keepOnUninstall: true
+
 # --- agent --------------------------------------------------------------
 # Off by default: a first install is detect-and-print only. Turning it on
 # makes ghcall create one Job per failing-CI PR.

@@ -1,0 +1,32 @@
+{{- /*
+The sqlite cache's volume. Only rendered for the sqlite driver with
+persistence on and no existingClaim; a postgres install never gets one.
+*/ -}}
+{{- $p := include "ghcall.persistence" . | fromYaml -}}
+{{- if and (include "ghcall.sqlitePersistent" .) (not $p.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ghcall.cacheClaimName" . }}
+  labels:
+    {{- include "ghcall.labels" . | nindent 4 }}
+  {{- if or $p.keepOnUninstall $p.annotations }}
+  annotations:
+    {{- if $p.keepOnUninstall }}
+    # A reinstall then reuses the cache instead of re-reporting every PR.
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with $p.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $p.accessModes | nindent 4 }}
+  {{- with $p.storageClass }}
+  storageClassName: {{ if eq . "-" }}""{{ else }}{{ . | quote }}{{ end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $p.size | quote }}
+{{- end }}

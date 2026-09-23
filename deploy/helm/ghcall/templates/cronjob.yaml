@@ -1,6 +1,7 @@
 {{- $tokenEnv := default "GITHUB_TOKEN" (dig "github" "token_env" "" .Values.config) -}}
 {{- $dsnEnv := default "GHCALL_DB_DSN" (dig "cache" "dsn_env" "" .Values.config) -}}
-{{- $wantDSN := eq (dig "cache" "driver" "sqlite" .Values.config) "postgres" -}}
+{{- include "ghcall.validate" . -}}
+{{- $wantDSN := eq (include "ghcall.cacheDriver" .) "postgres" -}}
 {{- $gitlabTokenEnv := default "GITLAB_TOKEN" (dig "gitlab" "token_env" "" .Values.config) -}}
 {{- $wantGitHub := include "ghcall.usesGitHub" . -}}
 {{- $wantGitLab := include "ghcall.usesGitLab" . -}}
@@ -91,9 +92,9 @@ spec:
                   mountPath: /etc/ghcall
                   readOnly: true
                 # The root filesystem is read-only; this is the only writable
-                # path ghcall gets. A sqlite cache.path must live under it,
-                # and is then ephemeral — which is why the default driver
-                # here is postgres.
+                # path ghcall gets, so a sqlite cache.path must live under it.
+                # With the sqlite driver and persistence.enabled it is a PVC
+                # and the cache survives between runs; otherwise an emptyDir.
                 - name: state
                   mountPath: /var/cache/ghcall
               resources:
@@ -103,7 +104,12 @@ spec:
               configMap:
                 name: {{ include "ghcall.fullname" . }}
             - name: state
+              {{- if include "ghcall.sqlitePersistent" . }}
+              persistentVolumeClaim:
+                claimName: {{ include "ghcall.cacheClaimName" . }}
+              {{- else }}
               emptyDir: {}
+              {{- end }}
           {{- with .Values.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
