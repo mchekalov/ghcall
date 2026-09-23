@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
-)
 
-const graphqlEndpoint = "https://api.github.com/graphql"
+	"ghcall/internal/vcs"
+)
 
 // GraphQLClient executes batched, aliased GraphQL queries against the
 // GitHub API. Unlike RESTClient, every call here costs its computed point
@@ -18,10 +18,23 @@ const graphqlEndpoint = "https://api.github.com/graphql"
 type GraphQLClient struct {
 	httpClient *http.Client
 	token      string
+	endpoint   string
 }
 
+// NewGraphQLClient targets github.com. Pass an endpoint for GitHub Enterprise.
 func NewGraphQLClient(token string) *GraphQLClient {
-	return &GraphQLClient{httpClient: &http.Client{Timeout: 60 * time.Second}, token: token}
+	return NewGraphQLClientWithEndpoint(token, DefaultGraphQLEndpoint)
+}
+
+func NewGraphQLClientWithEndpoint(token, endpoint string) *GraphQLClient {
+	if endpoint == "" {
+		endpoint = DefaultGraphQLEndpoint
+	}
+	return &GraphQLClient{
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+		token:      token,
+		endpoint:   endpoint,
+	}
 }
 
 type graphqlRequest struct {
@@ -50,7 +63,7 @@ func (c *GraphQLClient) execute(query string, variables map[string]any) (json.Ra
 	if err != nil {
 		return nil, RateLimit{}, fmt.Errorf("encoding graphql request: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, graphqlEndpoint, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, RateLimit{}, err
 	}
@@ -87,35 +100,7 @@ func (c *GraphQLClient) execute(query string, variables map[string]any) (json.Ra
 	return gr.Data, withLimit.RateLimit, nil
 }
 
-// RepoRef identifies a repo independent of any particular filter config.
-type RepoRef struct {
-	Owner string
-	Name  string
-}
-
-// FieldSet controls which optional, cost-bearing sub-selections a PR query
-// includes. number/title/updatedAt/author/state are always fetched since the
-// pipeline needs them regardless of filter fields.
-type FieldSet struct {
-	Body bool // fetch bodyText
-	CI   bool // fetch statusCheckRollup via the head commit
-}
-
-func (fs FieldSet) merge(other FieldSet) FieldSet {
-	return FieldSet{Body: fs.Body || other.Body, CI: fs.CI || other.CI}
-}
-
-// MergeFieldSets is exported for the pipeline to compute, per repo, the
-// union of fields needed across every filter that references it.
-func MergeFieldSets(sets ...FieldSet) FieldSet {
-	var out FieldSet
-	for _, s := range sets {
-		out = out.merge(s)
-	}
-	return out
-}
-
-func prSelection(fs FieldSet) string {
+func prSelection(fs vcs.FieldSet) string {
 	sel := "number title updatedAt state author { login }"
 	if fs.Body {
 		sel += " bodyText"
@@ -124,26 +109,6 @@ func prSelection(fs FieldSet) string {
 		sel += " commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }"
 	}
 	return sel
-}
-
-// PullRequest is the subset of PR data the pipeline understands, decoded
-// from whichever fields were actually requested.
-type PullRequest struct {
-	Number    int
-	Title     string
-	Body      string
-	Author    string
-	UpdatedAt string
-	State     string // OPEN, CLOSED, MERGED
-	CIState   string // "" if not requested or no checks reported yet
-}
-
-// RepoQuery is one repo's worth of PR-list request within a batch.
-type RepoQuery struct {
-	Owner  string
-	Name   string
-	States []string // GraphQL PullRequestState values: OPEN, CLOSED, MERGED
-	Fields FieldSet
 }
 
 type prNodesResponse struct {
@@ -170,8 +135,8 @@ type prNodesResponse struct {
 // returns each repo's matching PRs (already sorted updated-desc by GitHub,
 // capped at `first` per repo). Callers are responsible for chunking queries
 // into batches that stay well under GraphQL's node cap.
-func (c *GraphQLClient) FetchRepoPRs(queries []RepoQuery, first int) (map[RepoRef][]PullRequest, RateLimit, error) {
-	result := make(map[RepoRef][]PullRequest, len(queries))
+func (c *GraphQLClient) FetchRepoPRs(queries []vcs.RepoQuery, first int) (map[vcs.Ref][]vcs.PullRequest, RateLimit, error) {
+	result := make(map[vcs.Ref][]vcs.PullRequest, len(queries))
 	if len(queries) == 0 {
 		return result, RateLimit{}, nil
 	}
@@ -182,8 +147,8 @@ func (c *GraphQLClient) FetchRepoPRs(queries []RepoQuery, first int) (map[RepoRe
 	body.WriteString("  rateLimit { remaining resetAt }\n")
 	for i, q := range queries {
 		decls = append(decls, fmt.Sprintf("$owner%d: String!", i), fmt.Sprintf("$name%d: String!", i))
-		variables[fmt.Sprintf("owner%d", i)] = q.Owner
-		variables[fmt.Sprintf("name%d", i)] = q.Name
+		variables[fmt.Sprintf("owner%d", i)] = q.Ref.Owner
+		variables[fmt.Sprintf("name%d", i)] = q.Ref.Name
 
 		states := "[" + strings.Join(q.States, ", ") + "]"
 		fmt.Fprintf(&body, "  r%d: repository(owner: $owner%d, name: $name%d) {\n", i, i, i)
@@ -205,10 +170,9 @@ func (c *GraphQLClient) FetchRepoPRs(queries []RepoQuery, first int) (map[RepoRe
 	}
 
 	for i, q := range queries {
-		ref := RepoRef{Owner: q.Owner, Name: q.Name}
 		raw, ok := parsed[fmt.Sprintf("r%d", i)]
 		if !ok || string(raw) == "null" {
-			result[ref] = nil
+			result[q.Ref] = nil
 			continue
 		}
 		var repoResp struct {
@@ -217,19 +181,19 @@ func (c *GraphQLClient) FetchRepoPRs(queries []RepoQuery, first int) (map[RepoRe
 			} `json:"pullRequests"`
 		}
 		if err := json.Unmarshal(raw, &repoResp); err != nil {
-			return nil, rl, fmt.Errorf("parsing repository %s/%s: %w", q.Owner, q.Name, err)
+			return nil, rl, fmt.Errorf("parsing repository %s: %w", q.Ref, err)
 		}
-		prs := make([]PullRequest, 0, len(repoResp.PullRequests.Nodes))
+		prs := make([]vcs.PullRequest, 0, len(repoResp.PullRequests.Nodes))
 		for _, n := range repoResp.PullRequests.Nodes {
 			prs = append(prs, pullRequestFromNode(n))
 		}
-		result[ref] = prs
+		result[q.Ref] = prs
 	}
 	return result, rl, nil
 }
 
-func pullRequestFromNode(n prNodesResponse) PullRequest {
-	pr := PullRequest{
+func pullRequestFromNode(n prNodesResponse) vcs.PullRequest {
+	pr := vcs.PullRequest{
 		Number:    n.Number,
 		Title:     n.Title,
 		Body:      n.BodyText,
@@ -243,25 +207,12 @@ func pullRequestFromNode(n prNodesResponse) PullRequest {
 	return pr
 }
 
-// PRRef identifies a single PR for the CI-status refresh pass.
-type PRRef struct {
-	Owner  string
-	Name   string
-	Number int
-}
-
-// PRStatus is the result of refreshing one watched PR's status.
-type PRStatus struct {
-	State   string // OPEN, CLOSED, MERGED
-	CIState string
-}
-
 // RefreshPRStatus re-checks CI/merge status for already-known PRs directly
 // by number, bypassing repo-level change detection entirely: a check run
 // finishing does not update the repo's pushed_at, so this is the only way
 // to catch a CI transition on a PR that was already fetched.
-func (c *GraphQLClient) RefreshPRStatus(refs []PRRef) (map[PRRef]PRStatus, RateLimit, error) {
-	result := make(map[PRRef]PRStatus, len(refs))
+func (c *GraphQLClient) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRStatus, RateLimit, error) {
+	result := make(map[vcs.PRRef]vcs.PRStatus, len(refs))
 	if len(refs) == 0 {
 		return result, RateLimit{}, nil
 	}
@@ -275,8 +226,8 @@ func (c *GraphQLClient) RefreshPRStatus(refs []PRRef) (map[PRRef]PRStatus, RateL
 			fmt.Sprintf("$owner%d: String!", i),
 			fmt.Sprintf("$name%d: String!", i),
 			fmt.Sprintf("$number%d: Int!", i))
-		variables[fmt.Sprintf("owner%d", i)] = r.Owner
-		variables[fmt.Sprintf("name%d", i)] = r.Name
+		variables[fmt.Sprintf("owner%d", i)] = r.Ref.Owner
+		variables[fmt.Sprintf("name%d", i)] = r.Ref.Name
 		variables[fmt.Sprintf("number%d", i)] = r.Number
 
 		fmt.Fprintf(&body, "  p%d: repository(owner: $owner%d, name: $name%d) {\n", i, i, i)
@@ -318,12 +269,12 @@ func (c *GraphQLClient) RefreshPRStatus(refs []PRRef) (map[PRRef]PRStatus, RateL
 			} `json:"pullRequest"`
 		}
 		if err := json.Unmarshal(raw, &repoResp); err != nil {
-			return nil, rl, fmt.Errorf("parsing pull request %s/%s#%d: %w", r.Owner, r.Name, r.Number, err)
+			return nil, rl, fmt.Errorf("parsing pull request %s#%d: %w", r.Ref, r.Number, err)
 		}
 		if repoResp.PullRequest == nil {
 			continue
 		}
-		status := PRStatus{State: repoResp.PullRequest.State}
+		status := vcs.PRStatus{State: repoResp.PullRequest.State}
 		if len(repoResp.PullRequest.Commits.Nodes) > 0 {
 			status.CIState = repoResp.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup.State
 		}

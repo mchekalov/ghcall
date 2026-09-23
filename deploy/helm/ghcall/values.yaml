@@ -44,6 +44,14 @@ github:
     key: token
   token: ""
 
+# Only used when some filter in `config.filters` sets `provider: gitlab`;
+# the token env var is otherwise not put on the pod at all.
+gitlab:
+  existingSecret:
+    name: ""
+    key: gitlab-token
+  token: ""
+
 database:
   existingSecret:
     name: ""
@@ -57,6 +65,14 @@ database:
 config:
   github:
     token_env: GITHUB_TOKEN
+    # base_url / graphql_url default to github.com; set both for GitHub
+    # Enterprise.
+
+  # Required only when a filter below sets `provider: gitlab`. base_url is
+  # the instance root, not its /api path.
+  # gitlab:
+  #   base_url: https://git.example.com
+  #   token_env: GITLAB_TOKEN
 
   cache:
     driver: postgres
@@ -68,6 +84,7 @@ config:
 
   filters:
     - name: ci-watch
+      # provider: github is the default and may be omitted.
       repos:
         - mchekalov/ghcall
       authors:
@@ -76,6 +93,17 @@ config:
       state: open
       fields: [number, title, author, updated_at, ci_status]
       watch_ci: true
+
+    # GitLab is detection only: these MRs are reported, never sent to the
+    # autofix agent (see the README). Nested namespaces are supported.
+    # - name: renovate-mrs
+    #   provider: gitlab
+    #   repos:
+    #     - group/subgroup/project
+    #   authors: [renovate]
+    #   state: open
+    #   fields: [number, title, author, updated_at, ci_status]
+    #   watch_ci: true
 
 # --- agent --------------------------------------------------------------
 # Off by default: a first install is detect-and-print only. Turning it on

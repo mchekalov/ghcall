@@ -14,6 +14,7 @@ import (
 
 	"ghcall/internal/config"
 	"ghcall/internal/pipeline"
+	"ghcall/internal/vcs"
 )
 
 // newTestLauncher wires a kubernetesLauncher at an httptest API-server stub,
@@ -67,7 +68,7 @@ func TestKubernetesLaunch_CreatesJob(t *testing.T) {
 	defer srv.Close()
 
 	l := newTestLauncher(t, testAgentConfig(), srv)
-	target := pipeline.FilterResult{Repo: "mchekalov/ghcall", PR: pipeline.PullRequestResult{Number: 42, CIState: "FAILURE"}}
+	target := pipeline.FilterResult{Provider: vcs.GitHub, Repo: "mchekalov/ghcall", PR: pipeline.PullRequestResult{Number: 42, CIState: "FAILURE"}}
 
 	out, err := l.launch(context.Background(), target, []string{"GITHUB_TOKEN=tok"})
 	if err != nil {
@@ -158,7 +159,7 @@ func TestKubernetesLaunch_ConflictIsSkipNotError(t *testing.T) {
 	defer srv.Close()
 
 	l := newTestLauncher(t, testAgentConfig(), srv)
-	target := pipeline.FilterResult{Repo: "o/r", PR: pipeline.PullRequestResult{Number: 7, CIState: "FAILURE"}}
+	target := pipeline.FilterResult{Provider: vcs.GitHub, Repo: "o/r", PR: pipeline.PullRequestResult{Number: 7, CIState: "FAILURE"}}
 
 	out, err := l.launch(context.Background(), target, nil)
 	if err != nil {
@@ -177,7 +178,7 @@ func TestKubernetesLaunch_ErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	l := newTestLauncher(t, testAgentConfig(), srv)
-	target := pipeline.FilterResult{Repo: "o/r", PR: pipeline.PullRequestResult{Number: 7, CIState: "FAILURE"}}
+	target := pipeline.FilterResult{Provider: vcs.GitHub, Repo: "o/r", PR: pipeline.PullRequestResult{Number: 7, CIState: "FAILURE"}}
 
 	if _, err := l.launch(context.Background(), target, nil); err == nil {
 		t.Fatal("expected an error for 403 Forbidden")
@@ -208,9 +209,9 @@ func TestRun_KubernetesLauncherEndToEnd(t *testing.T) {
 	l := newTestLauncher(t, cfg, srv)
 
 	results := []pipeline.FilterResult{
-		{Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}},
-		{Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "ERROR"}},
-		{Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "SUCCESS"}}, // not a candidate
+		{Provider: vcs.GitHub, Repo: "o/a", PR: pipeline.PullRequestResult{Number: 1, CIState: "FAILURE"}},
+		{Provider: vcs.GitHub, Repo: "o/b", PR: pipeline.PullRequestResult{Number: 2, CIState: "ERROR"}},
+		{Provider: vcs.GitHub, Repo: "o/c", PR: pipeline.PullRequestResult{Number: 3, CIState: "SUCCESS"}}, // not a candidate
 	}
 
 	// Run resolves the launcher from cfg; point that resolution at the stub.

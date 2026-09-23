@@ -6,6 +6,13 @@ Run it once, now, without waiting for the schedule:
   kubectl create job --from=cronjob/{{ include "ghcall.fullname" . }} ghcall-manual-1 -n {{ .Release.Namespace }}
   kubectl logs job/ghcall-manual-1 -n {{ .Release.Namespace }}
 
+{{ if include "ghcall.usesGitLab" . -}}
+Some filters target GitLab. ghcall reports those merge requests, but never
+approves, merges or comments on them — and never sends them to the autofix
+agent: that container can only fix a GitLab MR from inside its own failing
+pipeline. Each run logs how many GitLab candidates it skipped.
+
+{{ end -}}
 {{ if .Values.agent.enabled -}}
 The CI-autofix agent is ENABLED. Every PR reported with a failing CI state
 gets one Job named ghcall-autofix-<repo>-<pr>:
@@ -25,6 +32,14 @@ model credentials (Bedrock/LiteLLM) and will fail as soon as they start.
 {{- else -}}
 The CI-autofix agent is disabled: this install only detects and prints.
 Set agent.enabled=true once the output looks right.
+{{- end }}
+
+UPGRADING from a ghcall older than this chart version: the cache tables are
+keyed by provider now, so the first run drops and rebuilds them. That run
+re-reports every matching PR.
+{{- if .Values.agent.enabled }}
+The agent is ENABLED, so that is a burst of autofix Jobs. Either run the
+first pass with agent.enabled=false, or accept the burst knowingly.
 {{- end }}
 
 {{ if include "ghcall.createSecret" . -}}

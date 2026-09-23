@@ -1,0 +1,53 @@
+# Watching Renovate merge requests on a self-hosted GitLab, alongside GitHub
+# PRs in the same pass.
+#
+# GitLab support is detection only: ghcall reports the MRs and tracks their
+# pipeline status, but never approves, merges, rebases or comments — and
+# never starts the autofix agent for one. The agent container's
+# `--platform gitlab` mode reads CI_PROJECT_ID / CI_MERGE_REQUEST_IID from
+# the ambient pipeline environment, so it can only run from inside a failing
+# GitLab pipeline. Each run logs how many GitLab candidates it skipped.
+
+github:
+  token_env: GITHUB_TOKEN
+  # base_url / graphql_url default to github.com; set both for GitHub Enterprise.
+
+gitlab:
+  # The instance root, not its /api path.
+  base_url: https://git.netcracker.com
+  # A read-only PAT is enough (read_api scope): ghcall only reads.
+  token_env: GITLAB_TOKEN
+
+cache:
+  driver: sqlite
+  path: ~/.cache/ghcall/cache.db
+
+concurrency:
+  max_in_flight: 15
+
+filters:
+  # Nested namespaces are supported: the last path segment is the project,
+  # everything before it the namespace. `number` is the MR's iid — the number
+  # in its URL — not GitLab's global id.
+  - name: renovate-mrs
+    provider: gitlab
+    repos:
+      - group/subgroup/project
+      - group/other-project
+    authors:
+      # Self-hosted GitLab usually runs Renovate as a plain PAT user, so this
+      # is whatever username that bot account has — no [bot] suffix.
+      - renovate
+    state: open
+    fields: [number, title, author, updated_at, ci_status]
+    watch_ci: true
+
+  # GitHub filters run in the same pass; provider defaults to github.
+  - name: dependabot-prs
+    repos:
+      - mchekalov/ghcall
+    authors:
+      - dependabot[bot]
+    state: open
+    fields: [number, title, author, updated_at, ci_status]
+    watch_ci: true

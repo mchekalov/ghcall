@@ -1,0 +1,35 @@
+# A mixed install: GitHub PRs and self-hosted GitLab MRs polled in the same
+# pass. Exercises the gitlab credential wiring and the nested-namespace path.
+github:
+  existingSecret:
+    name: ghcall-github
+    key: token
+gitlab:
+  existingSecret:
+    name: ghcall-gitlab
+    key: gitlab-token
+database:
+  existingSecret:
+    name: ghcall-db
+    key: dsn
+
+config:
+  gitlab:
+    base_url: https://git.example.com
+    token_env: GITLAB_TOKEN
+
+  filters:
+    - name: ci-watch
+      repos: [mchekalov/ghcall]
+      authors: ["renovate[bot]"]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true
+
+    - name: renovate-mrs
+      provider: gitlab
+      repos: [group/subgroup/project]
+      authors: [renovate]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true
