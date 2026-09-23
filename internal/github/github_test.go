@@ -148,7 +148,7 @@ func TestFetchRepoPRsAliasedBatch(t *testing.T) {
 
 func TestRefreshPRStatus(t *testing.T) {
 	reply := `{"data":{
-		"p0":{"pullRequest":{"state":"OPEN","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}},
+		"p0":{"pullRequest":{"state":"OPEN","title":"Bump x","author":{"login":"dependabot[bot]"},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}},
 		"p1":{"pullRequest":null}
 	}}`
 	srv := graphqlServer(t, reply, nil)
@@ -164,7 +164,7 @@ func TestRefreshPRStatus(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d statuses, want 1 (a deleted PR is left unset): %+v", len(got), got)
 	}
-	if want := (vcs.PRStatus{State: "OPEN", CIState: "SUCCESS"}); got[a] != want {
+	if want := (vcs.PRStatus{State: "OPEN", CIState: "SUCCESS", Title: "Bump x", Author: "dependabot[bot]"}); got[a] != want {
 		t.Errorf("status = %+v, want %+v", got[a], want)
 	}
 }

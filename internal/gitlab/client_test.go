@@ -204,7 +204,7 @@ func TestFetchRepoPRsAliasedBatch(t *testing.T) {
 
 func TestRefreshPRStatus(t *testing.T) {
 	reply := `{"data":{
-		"p0":{"mergeRequest":{"state":"opened","headPipeline":{"status":"SUCCESS"}}},
+		"p0":{"mergeRequest":{"state":"opened","title":"Update dependency x","author":{"username":"renovate"},"headPipeline":{"status":"SUCCESS"}}},
 		"p1":{"mergeRequest":null},
 		"p2":null
 	}}`
@@ -229,7 +229,7 @@ func TestRefreshPRStatus(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d statuses, want 1 (missing MRs are left unset): %+v", len(got), got)
 	}
-	want := vcs.PRStatus{State: "OPEN", CIState: "SUCCESS"}
+	want := vcs.PRStatus{State: "OPEN", CIState: "SUCCESS", Title: "Update dependency x", Author: "renovate"}
 	if got[a] != want {
 		t.Errorf("status = %+v, want %+v", got[a], want)
 	}
