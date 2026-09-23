@@ -6,6 +6,29 @@ Run it once, now, without waiting for the schedule:
   kubectl create job --from=cronjob/{{ include "ghcall.fullname" . }} ghcall-manual-1 -n {{ .Release.Namespace }}
   kubectl logs job/ghcall-manual-1 -n {{ .Release.Namespace }}
 
+{{ $persistence := include "ghcall.persistence" . | fromYaml -}}
+{{ if include "ghcall.sqlitePersistent" . -}}
+The cache is sqlite on PVC {{ include "ghcall.cacheClaimName" . }}, mounted at /var/cache/ghcall.
+{{- if not $persistence.existingClaim }}
+On a WaitForFirstConsumer StorageClass the PVC stays Pending until the first
+Job pod is scheduled, so `helm install --wait` can hang; skip --wait, or start
+a run now with the `kubectl create job` command above.
+{{- if $persistence.keepOnUninstall }}
+`helm uninstall` keeps the PVC so a reinstall reuses the cache. To drop it:
+
+  kubectl delete pvc {{ include "ghcall.cacheClaimName" . }} -n {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
+
+The first run on a new (or previously emptyDir) cache re-reports every
+matching PR; after that, runs are incremental.
+
+{{ else if eq (include "ghcall.cacheDriver" .) "sqlite" -}}
+WARNING: the sqlite cache is on an emptyDir (persistence.enabled=false). It
+is lost when each run's pod exits, so every run re-reports every matching PR{{ if .Values.agent.enabled }}
+and re-triggers the agent for every failing one{{ end }}.
+
+{{ end -}}
 {{ if include "ghcall.usesGitLab" . -}}
 Some filters target GitLab. ghcall reports those merge requests, but never
 approves, merges or comments on them — and never sends them to the autofix

@@ -1,6 +1,8 @@
 # ghcall running inside Kubernetes, as the Helm chart in deploy/helm/ghcall
-# renders it: a Postgres cache (no PVC, no single-writer bottleneck) and the
-# kubernetes agent launcher (no docker socket).
+# renders it by default: a Postgres cache (no PVC, no single-writer
+# bottleneck) and the kubernetes agent launcher (no docker socket). The chart
+# can instead keep a sqlite cache on a PVC — `driver: sqlite` with
+# `path: /var/cache/ghcall/cache.db`; see the chart README.
 #
 # The chart generates this file into a ConfigMap, so nothing secret appears
 # in it — the GitHub token and the database DSN arrive as env vars.

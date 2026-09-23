@@ -100,3 +100,54 @@ Secret it never created: the pod would sit in CreateContainerConfigError.
 true
 {{- end -}}
 {{- end -}}
+
+{{/*
+The cache driver ghcall will actually use. An unset or empty driver is
+sqlite, matching ghcall's own default, so every driver check in the chart
+goes through here.
+*/}}
+{{- define "ghcall.cacheDriver" -}}
+{{- default "sqlite" (dig "cache" "driver" "" .Values.config) -}}
+{{- end -}}
+
+{{/*
+.Values.persistence with values.yaml's defaults filled in, as YAML (read it
+back with fromYaml). `helm upgrade --reuse-values` from a chart older than
+0.2.0 reuses the old release's values, which have no persistence block at
+all. Keys are filled per missing key rather than with merge, which would
+also overwrite an explicit false.
+*/}}
+{{- define "ghcall.persistence" -}}
+{{- $p := deepCopy (default (dict) .Values.persistence) -}}
+{{- $defaults := dict "enabled" true "existingClaim" "" "storageClass" "" "accessModes" (list "ReadWriteOnce") "size" "1Gi" "annotations" (dict) "keepOnUninstall" true -}}
+{{- range $k, $v := $defaults -}}
+{{- if not (hasKey $p $k) -}}{{- $_ := set $p $k $v -}}{{- end -}}
+{{- end -}}
+{{- toYaml $p -}}
+{{- end -}}
+
+{{/* True when the sqlite cache lives on a PVC rather than the emptyDir. */}}
+{{- define "ghcall.sqlitePersistent" -}}
+{{- if and (eq (include "ghcall.cacheDriver" .) "sqlite") (include "ghcall.persistence" . | fromYaml).enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/* The PVC holding the sqlite cache: an existing one, or the chart's own. */}}
+{{- define "ghcall.cacheClaimName" -}}
+{{- default (printf "%s-cache" (include "ghcall.fullname" .)) (include "ghcall.persistence" . | fromYaml).existingClaim -}}
+{{- end -}}
+
+{{/*
+Render-time checks for combinations the schema cannot express. Each would
+otherwise surface only at runtime, as a crash-looping or corrupting pod.
+*/}}
+{{- define "ghcall.validate" -}}
+{{- if eq (include "ghcall.cacheDriver" .) "sqlite" -}}
+{{- $path := dig "cache" "path" "" .Values.config -}}
+{{- if and $path (or (not (hasPrefix "/var/cache/ghcall/" $path)) (contains ".." $path)) -}}
+{{- fail (printf "config.cache.path %q: the sqlite cache must be under /var/cache/ghcall/, the only writable path in the pod (the root filesystem is read-only). Leave it empty for /var/cache/ghcall/cache.db." $path) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (include "ghcall.sqlitePersistent" .) (ne .Values.concurrencyPolicy "Forbid") -}}
+{{- fail (printf "concurrencyPolicy %q: a persistent sqlite cache requires Forbid. At most one ghcall pod may hold the cache at a time: SQLite has a single writer, and a ReadWriteOnce volume attaches to one node." .Values.concurrencyPolicy) -}}
+{{- end -}}
+{{- end -}}

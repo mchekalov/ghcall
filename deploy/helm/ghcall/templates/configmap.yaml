@@ -3,7 +3,16 @@ ghcall's config file. The agent block is built from .Values.agent rather
 than being written into .Values.config, so the chart can wire the
 kubernetes launcher and the RBAC that goes with it from a single switch.
 Anything set under config.agent is ignored.
+
+For sqlite, an empty cache.path is pinned to the state volume: ghcall's own
+default (~/.cache/...) is on the read-only root filesystem.
 */ -}}
+{{- $config := deepCopy .Values.config -}}
+{{- if and (eq (include "ghcall.cacheDriver" .) "sqlite") (not (dig "cache" "path" "" $config)) -}}
+{{- $cache := default (dict) $config.cache -}}
+{{- $_ := set $cache "path" "/var/cache/ghcall/cache.db" -}}
+{{- $_ = set $config "cache" $cache -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -12,7 +21,7 @@ metadata:
     {{- include "ghcall.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- omit .Values.config "agent" | toYaml | nindent 4 }}
+    {{- omit $config "agent" | toYaml | nindent 4 }}
     {{- if .Values.agent.enabled }}
     agent:
       image: {{ .Values.agent.image | quote }}

@@ -13,10 +13,13 @@ whole runtime model.
 
 ## Prerequisites
 
-- A PostgreSQL database. The chart does **not** deploy one; it takes a DSN
-  from a Secret. Any reachable Postgres works, in-namespace or managed.
-  (`config.cache.driver: sqlite` also works, but the file lives on an
-  `emptyDir` and dies with the pod, so every run re-reports everything.)
+- A cache backend, one of:
+  - PostgreSQL (the chart default). The chart does **not** deploy one; it
+    takes a DSN from a Secret. Any reachable Postgres works, in-namespace or
+    managed.
+  - SQLite on a PVC (`config.cache.driver: sqlite`). Needs a StorageClass
+    that can provision a ReadWriteOnce volume, or a pre-created claim. See
+    [SQLite cache](#sqlite-cache).
 - For GitHub filters (the default provider): a GitHub token in a Secret. A
   GitLab-only install needs none; the pod gets no `GITHUB_TOKEN` at all.
 - For GitLab filters: a self-hosted GitLab reachable from the cluster and a
@@ -91,6 +94,58 @@ The one exception is `config.agent`, which is **ignored**: the agent block is
 built from the top-level `agent:` values instead, so enabling the agent also
 wires the `kubernetes` launcher and its RBAC from a single switch.
 
+### SQLite cache
+
+For a small install without a Postgres server:
+
+```bash
+helm install ghcall deploy/helm/ghcall \
+  --set github.existingSecret.name=ghcall-github \
+  --set config.cache.driver=sqlite \
+  --set 'config.filters[0].name=ci-watch' \
+  --set 'config.filters[0].repos[0]=myorg/myrepo'
+```
+
+The chart renders a PVC named `<release>-cache` (1Gi, ReadWriteOnce),
+mounts it at `/var/cache/ghcall`, and sets `cache.path` to
+`/var/cache/ghcall/cache.db` unless you set one. A custom `cache.path` must
+stay under `/var/cache/ghcall/` — the root filesystem is read-only — or the
+render fails. No database Secret is needed.
+
+| Value | Default | |
+|---|---|---|
+| `persistence.enabled` | `true` | `false` falls back to an `emptyDir`: every run re-reports everything |
+| `persistence.existingClaim` | `""` | mount this PVC instead of rendering one |
+| `persistence.storageClass` | `""` | empty = cluster default; `"-"` = `storageClassName: ""` |
+| `persistence.accessModes` | `[ReadWriteOnce]` | `ReadWriteOncePod` also works where the CSI driver supports it |
+| `persistence.size` | `1Gi` | the cache is a few rows per repo and open PR |
+| `persistence.annotations` | `{}` | added to the rendered PVC |
+| `persistence.keepOnUninstall` | `true` | adds `helm.sh/resource-policy: keep` |
+
+These values are ignored with the postgres driver: no PVC is rendered.
+
+Things to know:
+
+- **One writer.** With a persistent sqlite cache the render fails unless
+  `concurrencyPolicy` is `Forbid` (the default). `Allow` and `Replace` can
+  both leave two pods on the volume at once — a Multi-Attach error on
+  different nodes, two SQLite writers on the same one.
+- **Node pinning.** A ReadWriteOnce volume attaches to one node (and one
+  zone) at a time, so every run schedules where the volume can go. For a
+  multi-zone cluster where that matters, use postgres.
+- **No NFS.** SQLite's file locking is unreliable on network filesystems;
+  avoid ReadWriteMany/NFS-backed StorageClasses for the cache.
+- **`helm install --wait`.** On a `WaitForFirstConsumer` StorageClass the
+  PVC stays Pending until the first Job pod is scheduled, and Helm waits for
+  PVCs to bind. Skip `--wait`, or start a run with `kubectl create job
+  --from=cronjob/<release>` right after installing.
+- **Uninstall.** The PVC survives `helm uninstall` so a reinstall does not
+  re-report (and, with the agent on, re-trigger) everything. Remove it with
+  `kubectl delete pvc <release>-cache`, or set
+  `persistence.keepOnUninstall=false` beforehand.
+
+The cache is disposable: deleting the PVC costs one run of re-reporting.
+
 ## The agent launcher
 
 With `agent.enabled=true`, ghcall creates one Job per PR it reports with a
@@ -153,7 +208,7 @@ RoleBinding subject stays in the release namespace.
 |---|---|---|
 | ghcall pod | `api.github.com:443` | REST change-detection and GraphQL PR fetches |
 | ghcall pod | the GitLab instance (443) | project checks and MR/pipeline GraphQL queries |
-| ghcall pod | the Postgres service | cache |
+| ghcall pod | the Postgres service | cache (postgres driver only) |
 | ghcall pod | the in-cluster API server | creating agent Jobs |
 | nodes | `artifactorycn.netcracker.com:17008` | pulling the ghcall and agent images |
 | agent Jobs | `api.github.com:443` | pushing commits, comments, merges |
@@ -162,9 +217,10 @@ RoleBinding subject stays in the release namespace.
 ## Values
 
 See `values.yaml` for the full list with comments; `values.schema.json`
-rejects the common misconfigurations at install time. The two files under
+rejects the common misconfigurations at install time. The files under
 `ci/` are worked examples: `existing-secrets-values.yaml` is the production
-shape, `agent-enabled-values.yaml` exercises every optional branch.
+shape, `agent-enabled-values.yaml` exercises every optional branch, and
+`sqlite-values.yaml` is the Postgres-free install on a PVC.
 
 ## Upgrading
 
@@ -178,10 +234,17 @@ but with the agent enabled, "re-report every matching PR" means a burst of
 autofix Jobs. Run the first pass with `agent.enabled=false`, or accept the
 burst knowingly. `helm install`/`upgrade` prints the same warning.
 
+A release already running with `config.cache.driver: sqlite` was on an
+`emptyDir` before chart 0.2.0. Upgrading creates the `<release>-cache` PVC;
+the first run on it starts empty (which is what every run did before), and
+later runs are incremental. Postgres releases render no PVC and are
+unaffected.
+
 ## Rendering without a cluster
 
 ```bash
 helm lint deploy/helm/ghcall
-helm template ghcall deploy/helm/ghcall -f deploy/helm/ghcall/ci/agent-enabled-values.yaml \
-  | kubectl apply --dry-run=client -f -
+for f in deploy/helm/ghcall/ci/*.yaml; do
+  helm template ghcall deploy/helm/ghcall -f "$f" | kubectl apply --dry-run=client -f -
+done
 ```

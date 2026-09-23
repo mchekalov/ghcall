@@ -1,0 +1,28 @@
+# A small install with no PostgreSQL server: the sqlite cache on a PVC the
+# chart renders itself. The agent is on to show it gets no cache volume, and
+# no database Secret is referenced because the driver needs no DSN.
+github:
+  existingSecret:
+    name: ghcall-github
+    key: token
+
+config:
+  cache:
+    driver: sqlite
+  filters:
+    - name: ci-watch
+      repos: [mchekalov/ghcall]
+      authors: ["renovate[bot]"]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true
+
+persistence:
+  storageClass: local-path
+  size: 256Mi
+
+agent:
+  enabled: true
+  image: autofix:dev
+  kubernetes:
+    envFromSecrets: [ghcall-agent-creds]
