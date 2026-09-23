@@ -437,8 +437,9 @@ func (p *Pipeline) refreshWatchedCI() ([]FilterResult, error) {
 				Provider: w.Ref.Provider,
 				Repo:     w.Ref.String(),
 				PR: PullRequestResult{
-					Number: w.Number, UpdatedAt: w.UpdatedAt,
-					State: status.State, CIState: status.CIState, CIChanged: true,
+					Number: w.Number, Title: status.Title, Author: status.Author,
+					UpdatedAt: w.UpdatedAt,
+					State:     status.State, CIState: status.CIState, CIChanged: true,
 				},
 			})
 		}

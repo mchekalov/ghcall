@@ -232,7 +232,7 @@ func (c *GraphQLClient) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRS
 
 		fmt.Fprintf(&body, "  p%d: repository(owner: $owner%d, name: $name%d) {\n", i, i, i)
 		fmt.Fprintf(&body, "    pullRequest(number: $number%d) {\n", i)
-		body.WriteString("      state\n")
+		body.WriteString("      state title author { login }\n")
 		body.WriteString("      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }\n")
 		body.WriteString("    }\n  }\n")
 	}
@@ -256,7 +256,11 @@ func (c *GraphQLClient) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRS
 		}
 		var repoResp struct {
 			PullRequest *struct {
-				State   string `json:"state"`
+				State  string `json:"state"`
+				Title  string `json:"title"`
+				Author struct {
+					Login string `json:"login"`
+				} `json:"author"`
 				Commits struct {
 					Nodes []struct {
 						Commit struct {
@@ -274,7 +278,11 @@ func (c *GraphQLClient) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRS
 		if repoResp.PullRequest == nil {
 			continue
 		}
-		status := vcs.PRStatus{State: repoResp.PullRequest.State}
+		status := vcs.PRStatus{
+			State:  repoResp.PullRequest.State,
+			Title:  repoResp.PullRequest.Title,
+			Author: repoResp.PullRequest.Author.Login,
+		}
 		if len(repoResp.PullRequest.Commits.Nodes) > 0 {
 			status.CIState = repoResp.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup.State
 		}
