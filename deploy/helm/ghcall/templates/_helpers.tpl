@@ -65,6 +65,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "gitlab-token" .Values.gitlab.existingSecret.key -}}
 {{- end -}}
 
+{{/*
+True when any filter targets GitHub (the default provider), i.e. when ghcall
+needs a GitHub token. A GitLab-only install must not reference a GitHub
+Secret it never created: the pod would sit in CreateContainerConfigError.
+*/}}
+{{- define "ghcall.usesGitHub" -}}
+{{- range (dig "filters" (list) .Values.config) -}}
+{{- if eq (default "github" .provider) "github" -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* True when any filter targets GitLab, i.e. when ghcall needs a GitLab token. */}}
 {{- define "ghcall.usesGitLab" -}}
 {{- range (dig "filters" (list) .Values.config) -}}

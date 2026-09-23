@@ -1,0 +1,25 @@
+# A GitLab-only install: no filter targets GitHub, so no GitHub Secret exists
+# and the CronJob must not reference one — otherwise the pod never starts
+# (CreateContainerConfigError: secret "<release>-credentials" not found).
+gitlab:
+  existingSecret:
+    name: ghcall-gitlab
+    key: gitlab-token
+database:
+  existingSecret:
+    name: ghcall-db
+    key: dsn
+
+config:
+  gitlab:
+    base_url: https://git.example.com
+    token_env: GITLAB_TOKEN
+
+  filters:
+    - name: renovate-mrs
+      provider: gitlab
+      repos: [group/subgroup/project]
+      authors: [renovate]
+      state: open
+      fields: [number, title, author, updated_at, ci_status]
+      watch_ci: true

@@ -17,7 +17,8 @@ whole runtime model.
   from a Secret. Any reachable Postgres works, in-namespace or managed.
   (`config.cache.driver: sqlite` also works, but the file lives on an
   `emptyDir` and dies with the pod, so every run re-reports everything.)
-- A GitHub token in a Secret.
+- For GitHub filters (the default provider): a GitHub token in a Secret. A
+  GitLab-only install needs none; the pod gets no `GITHUB_TOKEN` at all.
 - For GitLab filters: a self-hosted GitLab reachable from the cluster and a
   read-only PAT (`read_api` scope) in a Secret.
 - If the agent is enabled: the agent image in a reachable registry, and a

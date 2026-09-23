@@ -2,6 +2,7 @@
 {{- $dsnEnv := default "GHCALL_DB_DSN" (dig "cache" "dsn_env" "" .Values.config) -}}
 {{- $wantDSN := eq (dig "cache" "driver" "sqlite" .Values.config) "postgres" -}}
 {{- $gitlabTokenEnv := default "GITLAB_TOKEN" (dig "gitlab" "token_env" "" .Values.config) -}}
+{{- $wantGitHub := include "ghcall.usesGitHub" . -}}
 {{- $wantGitLab := include "ghcall.usesGitLab" . -}}
 apiVersion: batch/v1
 kind: CronJob
@@ -57,11 +58,13 @@ spec:
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}
               env:
+                {{- if $wantGitHub }}
                 - name: {{ $tokenEnv }}
                   valueFrom:
                     secretKeyRef:
                       name: {{ include "ghcall.githubSecretName" . }}
                       key: {{ include "ghcall.githubSecretKey" . }}
+                {{- end }}
                 {{- if $wantGitLab }}
                 - name: {{ $gitlabTokenEnv }}
                   valueFrom:
