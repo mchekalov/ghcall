@@ -2,7 +2,7 @@
 # this image has no entrypoint script, no supervisor and no docker CLI — the
 # kubernetes agent launcher creates Jobs through the API server instead of
 # shelling out to a container runtime.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 WORKDIR /src
 
