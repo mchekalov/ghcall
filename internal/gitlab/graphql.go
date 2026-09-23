@@ -192,7 +192,7 @@ func (p *Provider) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRStatus
 
 		fmt.Fprintf(&body, "  p%d: project(fullPath: $path%d) {\n", i, i)
 		fmt.Fprintf(&body, "    mergeRequest(iid: $iid%d) {\n", i)
-		body.WriteString("      state\n")
+		body.WriteString("      state title author { username }\n")
 		body.WriteString("      headPipeline { status }\n")
 		body.WriteString("    }\n  }\n")
 	}
@@ -216,7 +216,11 @@ func (p *Provider) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRStatus
 		}
 		var projectResp struct {
 			MergeRequest *struct {
-				State        string `json:"state"`
+				State  string `json:"state"`
+				Title  string `json:"title"`
+				Author struct {
+					Username string `json:"username"`
+				} `json:"author"`
 				HeadPipeline *struct {
 					Status string `json:"status"`
 				} `json:"headPipeline"`
@@ -228,7 +232,11 @@ func (p *Provider) RefreshPRStatus(refs []vcs.PRRef) (map[vcs.PRRef]vcs.PRStatus
 		if projectResp.MergeRequest == nil {
 			continue
 		}
-		status := vcs.PRStatus{State: MRState(projectResp.MergeRequest.State)}
+		status := vcs.PRStatus{
+			State:  MRState(projectResp.MergeRequest.State),
+			Title:  projectResp.MergeRequest.Title,
+			Author: projectResp.MergeRequest.Author.Username,
+		}
 		if projectResp.MergeRequest.HeadPipeline != nil {
 			status.CIState = PipelineState(projectResp.MergeRequest.HeadPipeline.Status)
 		}

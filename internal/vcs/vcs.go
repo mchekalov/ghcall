@@ -80,6 +80,11 @@ type RepoQuery struct {
 type PRStatus struct {
 	State   string // OPEN, CLOSED, MERGED
 	CIState string
+	// Title and Author are re-read alongside the status so a CI-transition
+	// row carries the same identifying fields a phase-2 row does; the
+	// watched_prs cache does not store them.
+	Title  string
+	Author string
 }
 
 // CheckResult is the outcome of a repo-level change check.
