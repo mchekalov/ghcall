@@ -20,7 +20,7 @@ concurrency:
 # starts one run of this image per PR any filter reports with a failing CI
 # state (FAILURE/ERROR) — see ai-agent-component-design.md.
 agent:
-  image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
+  image: artifactorycn.netcracker.com:17009/product/prod.platform.databases_ci-tools-autofix:master_latest
   launcher: docker                # docker (default) | kubernetes — see example-kubernetes.yaml
   docker_bin: docker              # docker launcher only; override for podman, etc.
   max_concurrent_runs: 2          # each run is a heavy LLM+build job, unlike the cheap polling calls

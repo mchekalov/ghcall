@@ -19,7 +19,7 @@ concurrency:
   max_in_flight: 15
 
 agent:
-  image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
+  image: artifactorycn.netcracker.com:17009/product/prod.platform.databases_ci-tools-autofix:master_latest
   # Instead of `docker run`, create one batch/v1 Job per failing-CI PR by
   # POSTing to the in-cluster API server with the pod's own ServiceAccount
   # token. ghcall needs only `create` on batch/jobs for this.
