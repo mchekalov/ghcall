@@ -10,7 +10,7 @@ on:
 # than being hardcoded, so re-pointing from artifactorycn to GHCR (or
 # anywhere else) is a settings change, not a code change.
 env:
-  REGISTRY: ${{ vars.IMAGE_REGISTRY || 'artifactorycn.netcracker.com:17008' }}
+  REGISTRY: ${{ vars.IMAGE_REGISTRY || 'artifactorycn.netcracker.com:17009' }}
   REPOSITORY: ${{ vars.IMAGE_REPOSITORY || 'product/prod.platform.databases_ghcall' }}
 
 jobs:

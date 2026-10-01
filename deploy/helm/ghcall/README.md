@@ -210,7 +210,7 @@ RoleBinding subject stays in the release namespace.
 | ghcall pod | the GitLab instance (443) | project checks and MR/pipeline GraphQL queries |
 | ghcall pod | the Postgres service | cache (postgres driver only) |
 | ghcall pod | the in-cluster API server | creating agent Jobs |
-| nodes | `artifactorycn.netcracker.com:17008` | pulling the ghcall and agent images |
+| nodes | `artifactorycn.netcracker.com:17009` | pulling the ghcall and agent images |
 | agent Jobs | `api.github.com:443` | pushing commits, comments, merges |
 | agent Jobs | the Bedrock / LiteLLM gateway | model calls |
 

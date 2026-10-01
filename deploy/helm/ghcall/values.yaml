@@ -8,7 +8,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  registry: artifactorycn.netcracker.com:17008
+  registry: artifactorycn.netcracker.com:17009
   repository: product/prod.platform.databases_ghcall
   # Defaults to .Chart.AppVersion when empty.
   tag: ""
@@ -87,6 +87,7 @@ config:
       # provider: github is the default and may be omitted.
       repos:
         - mchekalov/ghcall
+        - Netcracker/pgskipper-operator
       authors:
         - renovate[bot]
         - dependabot[bot]
@@ -135,7 +136,7 @@ persistence:
 # makes ghcall create one Job per failing-CI PR.
 agent:
   enabled: false
-  image: artifactorycn.netcracker.com:17008/product/prod.platform.databases_ci-tools-autofix:master_latest
+  image: artifactorycn.netcracker.com:17009/product/prod.platform.databases_ci-tools-autofix:master_latest
   maxConcurrentRuns: 2
   # Becomes the agent Job's activeDeadlineSeconds.
   perRunTimeoutSeconds: 1500
