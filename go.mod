@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/jackc/pgx/v5 v5.13.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
